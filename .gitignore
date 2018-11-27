@@ -1,0 +1,16 @@
+.gradle/
+.idea/
+build/
+clients/
+config/
+cordapp/
+gradle/
+lib/
+build.gradle
+gradle.properties
+gradlew
+gradlew.bat
+LICENSE
+README.md
+settings.gradle
+TRADEMARK
