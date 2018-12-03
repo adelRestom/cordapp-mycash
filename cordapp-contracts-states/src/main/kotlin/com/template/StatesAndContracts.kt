@@ -23,15 +23,16 @@ class MyCashContract : Contract {
         // Verification logic goes here.
         // Require a single command per transaction
         val command = tx.commands.requireSingleCommand<MyCashContract.Commands>()
+        val inputs = tx.inputsOfType<MyCash>()
+        val outputs = tx.outputsOfType<MyCash>()
 
         when (command.value) {
             is Commands.Issue -> {
                 requireThat {
                     // Generic constraints around the IOU transaction.
                     "No inputs should be consumed when issuing new cash." using (tx.inputs.isEmpty())
-                    "At least one output state should be created." using (tx.outputs.isNotEmpty())
-                    val outputs = tx.outputsOfType<MyCash>()
-                    "The issuer and the owner cannot be the same entity." using outputs.filter { it.issuer == it.owner }.isNotEmpty()
+                    "At least one MyCash output state should be created." using (outputs.isNotEmpty())
+                    "The issuer and the owner cannot be the same entity." using outputs.filter { it.issuer == it.owner }.isEmpty()
                     "Only the issuer can create new cash." using command.signers.containsAll(outputs.map { it.issuer.owningKey })
                 }
             }
@@ -39,19 +40,17 @@ class MyCashContract : Contract {
             is Commands.Move -> {
                 requireThat {
                     // Generic constraints around the IOU transaction.
-                    "One or more inputs should be consumed when moving cash." using (tx.inputs.isNotEmpty())
-                    "At least one output state should be created." using (tx.outputs.isNotEmpty())
-                    val outputs = tx.outputsOfType<MyCash>()
-                    "Old owner must sign the move." using command.signers.containsAll(outputs.map { it.oldOwner.owningKey })
+                    "One or more MyCash inputs should be consumed when moving cash." using (inputs.isNotEmpty())
+                    "At least one MyCash output state should be created." using (outputs.isNotEmpty())
+                    "Old owners must sign the move." using command.signers.containsAll(inputs.map { it.owner.owningKey })
                 }
             }
 
             is Commands.Exit -> {
                 requireThat {
                     // Generic constraints around the IOU transaction.
-                    "One or more inputs should be consumed when destroying cash." using (tx.inputs.isNotEmpty())
+                    "One or more MyCash inputs should be consumed when destroying cash." using (inputs.isNotEmpty())
                     "There should be no outputs." using (tx.outputs.isEmpty())
-                    val inputs = tx.inputsOfType<MyCash>()
                     "Issuer and Owners must sign the exit command." using command.signers.containsAll(inputs.map { it.exitKeys[0]; it.exitKeys[1] })
                 }
             }
@@ -79,27 +78,21 @@ data class MyCash(val issuer: AbstractParty,
                   override var amount: Amount<Issued<Currency>>) :
         FungibleAsset<Currency>{
 
-    var oldOwner: AbstractParty = owner
-
     // Issuer and owner should be aware of this state
-    override var participants = listOf(issuer, owner)
+    override val participants
+        get() = listOf(issuer, owner)
 
     // Issuer and owner must sign exit command to destroy the cash amount (i.e. move it off-ledger)
-    override var exitKeys = listOf(issuer.owningKey, owner.owningKey)
+    override val exitKeys
+        get() = listOf(issuer.owningKey, owner.owningKey)
 
     override fun withNewOwner(newOwner: AbstractParty): CommandAndState {
         val updatedCash = copy(owner = newOwner)
-        updatedCash.oldOwner = owner
-        updatedCash.participants = listOf(issuer, owner)
-        updatedCash.exitKeys = listOf(issuer.owningKey, owner.owningKey)
         return CommandAndState(MyCashContract.Commands.Move(), updatedCash)
     }
 
     override fun withNewOwnerAndAmount(newAmount: Amount<Issued<Currency>>, newOwner: AbstractParty): FungibleAsset<Currency> {
         val updatedCash = copy(owner = newOwner, amount = newAmount)
-        updatedCash.oldOwner = owner
-        updatedCash.participants = listOf(issuer, owner)
-        updatedCash.exitKeys = listOf(issuer.owningKey, owner.owningKey)
         return updatedCash
     }
 }
