@@ -14,7 +14,7 @@ import java.util.*
 class MyCashContract : Contract {
     companion object {
         // Used to identify our contract when building a transaction.
-        const val ID = "com.template.MyCashContract"
+        const val MyCash_Contract_ID = "com.template.MyCashContract"
     }
     
     // A transaction is valid if the verify() function of the contract of all the transaction's input and output states
@@ -43,6 +43,15 @@ class MyCashContract : Contract {
                     "One or more MyCash inputs should be consumed when moving cash." using (inputs.isNotEmpty())
                     "At least one MyCash output state should be created." using (outputs.isNotEmpty())
                     "Old owners must sign the move." using command.signers.containsAll(inputs.map { it.owner.owningKey })
+                    var inputSum = 0L
+                    var outputSum = 0L
+                    for (input in inputs) {
+                        inputSum += input.amount.quantity
+                    }
+                    for (output in outputs) {
+                        outputSum += output.amount.quantity
+                    }
+                    "Input amounts must equal outputs amounts." using (inputSum == outputSum)
                 }
             }
 
@@ -78,9 +87,9 @@ data class MyCash(val issuer: AbstractParty,
                   override var amount: Amount<Issued<Currency>>) :
         FungibleAsset<Currency>{
 
-    // Issuer and owner should be aware of this state
+    // Owner should be aware of this state
     override val participants
-        get() = listOf(issuer, owner)
+        get() = listOf(owner)
 
     // Issuer and owner must sign exit command to destroy the cash amount (i.e. move it off-ledger)
     override val exitKeys
