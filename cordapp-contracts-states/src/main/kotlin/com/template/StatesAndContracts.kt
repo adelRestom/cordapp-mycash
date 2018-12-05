@@ -51,7 +51,7 @@ class MyCashContract : Contract {
                     for (output in outputs) {
                         outputSum += output.amount.quantity
                     }
-                    "Input amounts must equal output amounts." using (inputSum == outputSum)
+                    "Inputs amount must be equal to outputs amount." using (inputSum == outputSum)
                 }
             }
 
