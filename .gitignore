@@ -3,9 +3,13 @@
 build/
 clients/
 config/
-cordapp/
+cordapp/build/
+cordapp/src/integrationTest/
+cordapp/src/test/
+cordapp/build.gradle
 gradle/
 lib/
+logs/
 build.gradle
 gradle.properties
 gradlew
