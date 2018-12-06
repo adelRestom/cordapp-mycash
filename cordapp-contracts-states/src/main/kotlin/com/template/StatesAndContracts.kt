@@ -3,8 +3,6 @@ package com.template
 import net.corda.core.contracts.*
 import net.corda.core.identity.AbstractParty
 import net.corda.core.transactions.LedgerTransaction
-import net.corda.core.identity.Party
-import net.corda.core.identity.AnonymousParty
 import java.security.PublicKey
 import java.util.*
 
@@ -30,10 +28,10 @@ class MyCashContract : Contract {
             is Commands.Issue -> {
                 requireThat {
                     // Generic constraints around the IOU transaction.
-                    "No inputs should be consumed when issuing new cash." using (tx.inputs.isEmpty())
+                    "No inputs should be consumed when issuing new cash." using (inputs.isEmpty())
                     "At least one MyCash output state should be created." using (outputs.isNotEmpty())
                     "The issuer and the owner cannot be the same entity." using outputs.filter { it.issuer == it.owner }.isEmpty()
-                    "Only the issuer can create new cash." using command.signers.containsAll(outputs.map { it.issuer.owningKey })
+                    "Issuer must sign the transaction." using command.signers.containsAll(outputs.map { it.issuer.owningKey })
                 }
             }
 
@@ -59,8 +57,13 @@ class MyCashContract : Contract {
                 requireThat {
                     // Generic constraints around the IOU transaction.
                     "One or more MyCash inputs should be consumed when destroying cash." using (inputs.isNotEmpty())
-                    "There should be no outputs." using (tx.outputs.isEmpty())
-                    "Issuer and Owners must sign the exit command." using command.signers.containsAll(inputs.map { it.exitKeys[0]; it.exitKeys[1] })
+                    "There should be no outputs." using (outputs.isEmpty())
+                    var exitKeys = mutableListOf<PublicKey>()
+                    for (input in inputs) {
+                        exitKeys.add(input.exitKeys[0])
+                        exitKeys.add(input.exitKeys[1])
+                    }
+                    "Issuer and Owners must sign the exit command." using command.signers.containsAll(exitKeys)
                 }
             }
 

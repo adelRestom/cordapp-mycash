@@ -1,8 +1,6 @@
-package com.example.flow
+package com.template
 
 import co.paralleluniverse.fibers.Suspendable
-import com.template.MyCash
-import com.template.MyCashContract
 import net.corda.core.contracts.Command
 import net.corda.core.contracts.StateRef
 import net.corda.core.contracts.requireThat

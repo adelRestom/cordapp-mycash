@@ -5,7 +5,6 @@ clients/
 config/
 cordapp/build/
 cordapp/src/integrationTest/
-cordapp/src/test/
 cordapp/build.gradle
 gradle/
 lib/

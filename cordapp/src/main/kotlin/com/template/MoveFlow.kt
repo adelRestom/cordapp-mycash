@@ -1,8 +1,6 @@
-package com.example.flow
+package com.template
 
 import co.paralleluniverse.fibers.Suspendable
-import com.template.MyCash
-import com.template.MyCashContract
 import com.template.MyCashContract.Companion.MyCash_Contract_ID
 import net.corda.core.contracts.*
 import net.corda.core.flows.*
