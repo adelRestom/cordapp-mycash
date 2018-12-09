@@ -4,11 +4,17 @@ build/
 clients/
 config/
 cordapp/build/
+cordapp/logs/
+cordapp/out/
 cordapp/src/integrationTest/
 cordapp/build.gradle
+cordapp-contracts-states/build/
+cordapp-contracts-states/out/
+cordapp-contracts-states/build.gradle
 gradle/
 lib/
 logs/
+out/
 build.gradle
 gradle.properties
 gradlew

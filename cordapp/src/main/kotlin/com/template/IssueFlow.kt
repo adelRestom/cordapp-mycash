@@ -1,31 +1,36 @@
 package com.template
 
 import co.paralleluniverse.fibers.Suspendable
-import com.template.MyCashContract.Companion.MyCash_Contract_ID
-import net.corda.core.contracts.Amount
+import com.template.contract.MyCashContract
+import com.template.contract.MyCashContract.Companion.MyCash_Contract_ID
+import com.template.state.MyCash
 import net.corda.core.contracts.Command
-import net.corda.core.contracts.Issued
 import net.corda.core.contracts.requireThat
 import net.corda.core.flows.*
+import net.corda.core.identity.AbstractParty
 import net.corda.core.identity.Party
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
-import net.corda.core.utilities.OpaqueBytes
 import net.corda.core.utilities.ProgressTracker
 import net.corda.core.utilities.ProgressTracker.Step
-import java.util.*
 
 object IssueFlow {
     @InitiatingFlow
     @StartableByRPC
-    class Initiator(val owner: Party, val dollarCents: Long) : FlowLogic<SignedTransaction>() {
+    class Initiator(val output: MyCash) : FlowLogic<SignedTransaction>() {
+
+        constructor(issuer: AbstractParty,
+                    owner: AbstractParty,
+                    amount: Long,
+                    currencyCode: String):
+                this(MyCash(issuer, owner, amount, currencyCode))
         
         /**
          * The progress tracker checkpoints each stage of the flow and outputs the specified messages when each
          * checkpoint is reached in the code. See the 'progressTracker.currentStep' expressions within the call() function.
          */
         companion object {
-            object GENERATING_TRANSACTION : Step("Generating transaction based on a new MyCash state.")
+            object GENERATING_TRANSACTION : Step("Generating transaction based on MyCash ISSUE flow.")
             object VERIFYING_TRANSACTION : Step("Verifying contract constraints.")
             object SIGNING_TRANSACTION : Step("Signing transaction with our private key.")
             object GATHERING_SIGS : Step("Gathering the counterparty's signature.") {
@@ -52,18 +57,14 @@ object IssueFlow {
          */
         @Suspendable
         override fun call(): SignedTransaction {
-            // Obtain a reference to the notary we want to use.
-            val notary = serviceHub.networkMapCache.notaryIdentities[0]
-            val amount = Amount(dollarCents, Issued(ourIdentity.ref(OpaqueBytes.of(0x01)), Currency.getInstance("USD")))
-            val issuer = ourIdentity
-                
             // Stage 1.
             progressTracker.currentStep = GENERATING_TRANSACTION
+            // Obtain a reference to the notary we want to use.
+            val notary = serviceHub.networkMapCache.notaryIdentities[0]
             // Generate an unsigned transaction.
-            val myCashState = MyCash(issuer = issuer, owner = owner, amount = amount)
-            val txCommand = Command(MyCashContract.Commands.Issue(), listOf(issuer.owningKey, owner.owningKey))
+            val txCommand = Command(MyCashContract.Commands.Issue(), listOf(output.issuer.owningKey, output.owner.owningKey))
             val txBuilder = TransactionBuilder(notary)
-                    .addOutputState(myCashState, MyCash_Contract_ID)
+                    .addOutputState(output, MyCash_Contract_ID)
                     .addCommand(txCommand)
 
             // Stage 2.
@@ -79,7 +80,8 @@ object IssueFlow {
             // Stage 4.
             progressTracker.currentStep = GATHERING_SIGS
             // Send the state to the counterparty, and receive it back with their signature.
-            val ownerFlow = initiateFlow(owner)
+            val ownerParty = output.owner as Party
+            val ownerFlow = initiateFlow(ownerParty)
             val fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, setOf(ownerFlow), GATHERING_SIGS.childProgressTracker()))
 
             // Stage 5.
@@ -97,12 +99,8 @@ object IssueFlow {
                 override fun checkTransaction(stx: SignedTransaction) = requireThat {
                     val output = stx.tx.outputs.single().data
                     "This must be a MyCash transaction." using (output is MyCash)
-                    val myCashState = output as MyCash
-                    "I will only accept USD." using (myCashState.amount.token.product.currencyCode.equals("USD"))
-                    "I will only accept cash issued by {O=Bank,L=New York,C=US}." using (myCashState.issuer.nameOrNull().toString().equals("O=Bank, L=New York, C=US"))
                 }
             }
-
             return subFlow(signTransactionFlow)
         }
     }

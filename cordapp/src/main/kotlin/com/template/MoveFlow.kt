@@ -1,7 +1,10 @@
 package com.template
 
 import co.paralleluniverse.fibers.Suspendable
-import com.template.MyCashContract.Companion.MyCash_Contract_ID
+import com.template.contract.MyCashContract
+import com.template.contract.MyCashContract.Companion.MyCash_Contract_ID
+import com.template.schema.MyCashSchemaV1
+import com.template.state.MyCash
 import net.corda.core.contracts.*
 import net.corda.core.flows.*
 import net.corda.core.identity.CordaX500Name
@@ -9,6 +12,7 @@ import net.corda.core.identity.Party
 import net.corda.core.node.services.Vault
 import net.corda.core.node.services.queryBy
 import net.corda.core.node.services.vault.QueryCriteria
+import net.corda.core.node.services.vault.builder
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.utilities.OpaqueBytes
@@ -19,7 +23,11 @@ import java.util.*
 object MoveFlow {
     @InitiatingFlow
     @StartableByRPC
-    class Initiator(val owner: Party, val newOwner: Party, val dollarCents: Long) : FlowLogic<SignedTransaction>() {
+    class Initiator(val issuer: Party, val owner: Party, val amount: Long, val currencyCode: String, val newOwner: Party) : FlowLogic<SignedTransaction>() {
+        
+        init {
+            require(amount > 0L) { "Move amount must be greater than zero" }
+        }
         
         /**
          * The progress tracker checkpoints each stage of the flow and outputs the specified messages when each
@@ -27,7 +35,7 @@ object MoveFlow {
          */
         companion object {
             object FETCHING_INPUTS : Step("Fetching owner's input states.")
-            object GENERATING_TRANSACTION : Step("Generating transaction based on move MyCash command.")
+            object GENERATING_TRANSACTION : Step("Generating transaction based on MyCash MOVE flow.")
             object VERIFYING_TRANSACTION : Step("Verifying contract constraints.")
             object SIGNING_TRANSACTION : Step("Signing transaction with our private key.")
             object GATHERING_SIGS : Step("Gathering the counterparty's signature.") {
@@ -55,27 +63,35 @@ object MoveFlow {
          */
         @Suspendable
         override fun call(): SignedTransaction {
-
-            require(dollarCents > 0L) { "Move amount must be greater than zero" }
-
             // Stage 0.
             progressTracker.currentStep = FETCHING_INPUTS
-            val ownerUnconsumedCriteria = QueryCriteria.FungibleAssetQueryCriteria(owner = listOf(owner), status = Vault.StateStatus.UNCONSUMED)
-            val ownerUnconsumedInputs = serviceHub.vaultService.queryBy<MyCash>(ownerUnconsumedCriteria).states
+
+            val myCashCriteria = QueryCriteria.FungibleAssetQueryCriteria(issuer = listOf(issuer),
+                    owner = listOf(owner),
+                    status = Vault.StateStatus.UNCONSUMED
+            )
+
+            val unconsumedInputs = builder {
+                val currencyIndex = MyCashSchemaV1.PersistentMyCash::currencyCode.equal(currencyCode)
+                val currencyCriteria = QueryCriteria.VaultCustomQueryCriteria(currencyIndex)
+                val criteria = myCashCriteria.and(currencyCriteria)
+                serviceHub.vaultService.queryBy<MyCash>(criteria).states
+            }
+
             var inputSum = 0L
             var inputs = mutableListOf<StateAndRef<MyCash>>()
-            for (input in ownerUnconsumedInputs){
+            for (input in unconsumedInputs){
                 inputSum += input.state.data.amount.quantity
                 inputs.add(input)
                 // Gather enough cash
-                if (inputSum > dollarCents) {
+                if (inputSum > amount) {
                     break
                 }
             }
 
-            require(inputSum >= dollarCents) { "$owner doesn't have enough cash! Only $inputSum is found" }
+            require(inputSum >= amount) { "$owner doesn't have enough cash! Only $inputSum is found" }
 
-            val change = inputSum - dollarCents
+            val change = inputSum - amount
 
             // Obtain a reference to the notary we want to use.
             val notary = serviceHub.networkMapCache.notaryIdentities[0]
@@ -95,7 +111,7 @@ object MoveFlow {
             }
 
             // Add outputs
-            val movedAmount = Amount(dollarCents, Issued(bank.ref(OpaqueBytes.of(0x01)), Currency.getInstance("USD")))
+            val movedAmount = Amount(amount, Issued(bank.ref(OpaqueBytes.of(0x01)), Currency.getInstance("USD")))
             val newCashState = MyCash(issuer = bank, owner = newOwner, amount = movedAmount)
             txBuilder.addOutputState(newCashState, MyCash_Contract_ID)
             if (change > 0) {
