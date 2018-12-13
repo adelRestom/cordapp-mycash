@@ -7,7 +7,6 @@ import com.template.state.MyCash
 import net.corda.core.contracts.Command
 import net.corda.core.contracts.requireThat
 import net.corda.core.flows.*
-import net.corda.core.identity.AbstractParty
 import net.corda.core.identity.Party
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
@@ -17,14 +16,14 @@ import net.corda.core.utilities.ProgressTracker.Step
 object IssueFlow {
     @InitiatingFlow
     @StartableByRPC
-    class Initiator(val output: MyCash) : FlowLogic<SignedTransaction>() {
+    class Initiator(val outputs: List<MyCash>) : FlowLogic<SignedTransaction>() {
 
-        constructor(issuer: AbstractParty,
-                    owner: AbstractParty,
+        constructor(issuer: Party,
+                    owner: Party,
                     amount: Long,
                     currencyCode: String):
-                this(MyCash(issuer, owner, amount, currencyCode))
-        
+                this(listOf(MyCash(issuer, owner, amount, currencyCode)))
+
         /**
          * The progress tracker checkpoints each stage of the flow and outputs the specified messages when each
          * checkpoint is reached in the code. See the 'progressTracker.currentStep' expressions within the call() function.
@@ -62,10 +61,12 @@ object IssueFlow {
             // Obtain a reference to the notary we want to use.
             val notary = serviceHub.networkMapCache.notaryIdentities[0]
             // Generate an unsigned transaction.
-            val txCommand = Command(MyCashContract.Commands.Issue(), listOf(output.issuer.owningKey, output.owner.owningKey))
+            val requiredParties = listOf(outputs.map { it.issuer }, outputs.map { it.owner }).flatMap { it }
+            val txCommand = Command(MyCashContract.Commands.Issue(), requiredParties.map { it.owningKey })
             val txBuilder = TransactionBuilder(notary)
-                    .addOutputState(output, MyCash_Contract_ID)
                     .addCommand(txCommand)
+
+            outputs.forEach { txBuilder.addOutputState(it, MyCash_Contract_ID) }
 
             // Stage 2.
             progressTracker.currentStep = VERIFYING_TRANSACTION
@@ -80,9 +81,8 @@ object IssueFlow {
             // Stage 4.
             progressTracker.currentStep = GATHERING_SIGS
             // Send the state to the counterparty, and receive it back with their signature.
-            val ownerParty = output.owner as Party
-            val ownerFlow = initiateFlow(ownerParty)
-            val fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, setOf(ownerFlow), GATHERING_SIGS.childProgressTracker()))
+            val counterParties = requiredParties.minus(ourIdentity).map { initiateFlow(it) }
+            val fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, counterParties, GATHERING_SIGS.childProgressTracker()))
 
             // Stage 5.
             progressTracker.currentStep = FINALISING_TRANSACTION
@@ -91,14 +91,20 @@ object IssueFlow {
         }
     }
 
-    @InitiatedBy(Initiator::class)
-    class Acceptor(val ownerFlow: FlowSession) : FlowLogic<SignedTransaction>() {
+    @InitiatedBy(IssueFlow.Initiator::class)
+    class Acceptor(val counterFlow: FlowSession) : FlowLogic<SignedTransaction>() {
         @Suspendable
         override fun call(): SignedTransaction {
-            val signTransactionFlow = object : SignTransactionFlow(ownerFlow) {
+            val signTransactionFlow = object : SignTransactionFlow(counterFlow) {
                 override fun checkTransaction(stx: SignedTransaction) = requireThat {
-                    val output = stx.tx.outputs.single().data
-                    "This must be a MyCash transaction." using (output is MyCash)
+                    val myCashOutputs = stx.tx.outputs.filter {
+                        val myCash = it.data as? MyCash
+                        if (myCash != null)
+                            myCash.owner == ourIdentity || myCash.issuer == ourIdentity
+                        else
+                            false
+                    }
+                    "This must be a MyCash transaction." using (myCashOutputs.isNotEmpty())
                 }
             }
             return subFlow(signTransactionFlow)

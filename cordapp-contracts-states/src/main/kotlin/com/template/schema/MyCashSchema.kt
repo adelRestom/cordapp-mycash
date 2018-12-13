@@ -1,8 +1,5 @@
 package com.template.schema
 
-import net.corda.core.identity.AbstractParty
-import net.corda.core.identity.CordaX500Name
-import net.corda.core.identity.Party
 import net.corda.core.schemas.MappedSchema
 import net.corda.core.schemas.PersistentState
 import javax.persistence.Column

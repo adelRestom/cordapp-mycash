@@ -7,28 +7,32 @@ import com.template.schema.MyCashSchemaV1
 import com.template.state.MyCash
 import net.corda.core.contracts.*
 import net.corda.core.flows.*
-import net.corda.core.identity.CordaX500Name
 import net.corda.core.identity.Party
 import net.corda.core.node.services.Vault
 import net.corda.core.node.services.queryBy
 import net.corda.core.node.services.vault.QueryCriteria
 import net.corda.core.node.services.vault.builder
+import net.corda.core.serialization.CordaSerializable
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.utilities.OpaqueBytes
 import net.corda.core.utilities.ProgressTracker
 import net.corda.core.utilities.ProgressTracker.Step
+import net.corda.core.utilities.unwrap
 import java.util.*
 
 object MoveFlow {
     @InitiatingFlow
     @StartableByRPC
-    class Initiator(val issuer: Party, val owner: Party, val amount: Long, val currencyCode: String, val newOwner: Party) : FlowLogic<SignedTransaction>() {
-        
+    class Initiator(val moveAmounts: List<MyCash>, val newOwner: Party) : FlowLogic<SignedTransaction>() {
+
         init {
-            require(amount > 0L) { "Move amount must be greater than zero" }
+            require(moveAmounts.filter { it.amount.quantity <= 0 }.isEmpty()) { "Move amount must be greater than zero" }
         }
-        
+
+        constructor(issuer: Party, owner: Party, amount: Long, currencyCode: String, newOwner: Party):
+                this(listOf(MyCash(issuer, owner, amount, currencyCode)), newOwner)
+
         /**
          * The progress tracker checkpoints each stage of the flow and outputs the specified messages when each
          * checkpoint is reached in the code. See the 'progressTracker.currentStep' expressions within the call() function.
@@ -66,42 +70,33 @@ object MoveFlow {
             // Stage 0.
             progressTracker.currentStep = FETCHING_INPUTS
 
-            val myCashCriteria = QueryCriteria.FungibleAssetQueryCriteria(issuer = listOf(issuer),
-                    owner = listOf(owner),
-                    status = Vault.StateStatus.UNCONSUMED
-            )
-
-            val unconsumedInputs = builder {
-                val currencyIndex = MyCashSchemaV1.PersistentMyCash::currencyCode.equal(currencyCode)
-                val currencyCriteria = QueryCriteria.VaultCustomQueryCriteria(currencyIndex)
-                val criteria = myCashCriteria.and(currencyCriteria)
-                serviceHub.vaultService.queryBy<MyCash>(criteria).states
-            }
-
-            var inputSum = 0L
             var inputs = mutableListOf<StateAndRef<MyCash>>()
-            for (input in unconsumedInputs){
-                inputSum += input.state.data.amount.quantity
-                inputs.add(input)
-                // Gather enough cash
-                if (inputSum > amount) {
-                    break
+            var changeAmounts = mutableListOf<MyCash>()
+            println("\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")
+            println("BEFORE: inputs.size: ${inputs.size}\n changeAmunts.size: ${changeAmounts.size}")
+            println("\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")
+            for (moveAmount in moveAmounts) {
+                val counterParty = initiateFlow(moveAmount.participants.first())
+                val untrustedData = counterParty.sendAndReceive<MoveData>(MoveData(moveAmount, inputs, changeAmounts))
+                val moveData = untrustedData.unwrap {
+                    it as? MoveData ?: throw Exception("MOVE Initiator flow cannot parse the received data")
                 }
+                inputs = moveData.inputs.toMutableList()
+                changeAmounts = moveData.changeAmounts.toMutableList()
             }
+            println("\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")
+            println("AFTER: inputs.size: ${inputs.size}\n changeAmunts.size: ${changeAmounts.size}")
+            println("\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")
 
-            require(inputSum >= amount) { "$owner doesn't have enough cash! Only $inputSum is found" }
-
-            val change = inputSum - amount
-
-            // Obtain a reference to the notary we want to use.
-            val notary = serviceHub.networkMapCache.notaryIdentities[0]
-            val issuer = serviceHub.identityService.wellKnownPartyFromX500Name(CordaX500Name("Bank", "New York", "US"))
-            val bank = issuer as Party
-                
             // Stage 1.
+            // Obtain a reference to the notary we want to use.
+            require (inputs.map { it.state.notary }.distinct().size == 1) { "Notary must be identical across all inputs" }
+            val notary = inputs[0].state.notary
+
             progressTracker.currentStep = GENERATING_TRANSACTION
             // Generate an unsigned transaction.
-            val txCommand = Command(MyCashContract.Commands.Move(), listOf(owner.owningKey, newOwner.owningKey))
+            val requiredParties = inputs.map { it.state.data.owner }.distinct().plus(newOwner)
+            val txCommand = Command(MyCashContract.Commands.Move(), requiredParties.map { it.owningKey })
             val txBuilder = TransactionBuilder(notary)
                     .addCommand(txCommand)
 
@@ -111,13 +106,11 @@ object MoveFlow {
             }
 
             // Add outputs
-            val movedAmount = Amount(amount, Issued(bank.ref(OpaqueBytes.of(0x01)), Currency.getInstance("USD")))
-            val newCashState = MyCash(issuer = bank, owner = newOwner, amount = movedAmount)
-            txBuilder.addOutputState(newCashState, MyCash_Contract_ID)
-            if (change > 0) {
-                val changeAmount = Amount(change, Issued(bank.ref(OpaqueBytes.of(0x01)), Currency.getInstance("USD")))
-                val changeCashState = MyCash(issuer = bank, owner = owner, amount = changeAmount)
-                txBuilder.addOutputState(changeCashState, MyCash_Contract_ID)
+            for (moveAmount in moveAmounts) {
+                txBuilder.addOutputState(moveAmount.copy(owner = newOwner), MyCash_Contract_ID)
+            }
+            for (changeAmount in changeAmounts) {
+                txBuilder.addOutputState(changeAmount, MyCash_Contract_ID)
             }
 
             // Stage 2.
@@ -133,8 +126,8 @@ object MoveFlow {
             // Stage 4.
             progressTracker.currentStep = GATHERING_SIGS
             // Send the state to the counterparty, and receive it back with their signature.
-            val newOwnerFlow = initiateFlow(newOwner)
-            val fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, setOf(newOwnerFlow), GATHERING_SIGS.childProgressTracker()))
+            val counterParties = requiredParties.minus(ourIdentity).map { initiateFlow(it) }
+            val fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, counterParties, GATHERING_SIGS.childProgressTracker()))
 
             // Stage 5.
             progressTracker.currentStep = FINALISING_TRANSACTION
@@ -144,24 +137,95 @@ object MoveFlow {
     }
 
     @InitiatedBy(Initiator::class)
-    class Acceptor(val ownerFlow: FlowSession) : FlowLogic<SignedTransaction>() {
+    class Acceptor(val counterFlow: FlowSession) : FlowLogic<Unit>() {
         @Suspendable
-        override fun call(): SignedTransaction {
-            val signTransactionFlow = object : SignTransactionFlow(ownerFlow) {
-                override fun checkTransaction(stx: SignedTransaction) = requireThat {
-                    // Fetch only my output
-                    val output = stx.tx.outputs.filter {
-                        val myCash = it.data as MyCash
-                        myCash.owner == ownerFlow.counterparty
-                    }.single().data
-                    "This must be a MyCash transaction." using (output is MyCash)
-                    val myCashState = output as MyCash
-                    "I will only accept USD." using (myCashState.amount.token.product.currencyCode.equals("USD"))
-                    "I will only accept cash issued by {O=Bank,L=New York,C=US}." using (myCashState.issuer.nameOrNull().toString().equals("O=Bank, L=New York, C=US"))
+        override fun call() {
+            val untrustedData = counterFlow.receive<MoveData>()
+            val moveData = untrustedData.unwrap {
+                it as? MoveData ?: throw Exception("MOVE Acceptor flow cannot parse the received data")
+            }
+            val inputs = moveData.inputs.toMutableList()
+            val changeAmounts = moveData.changeAmounts.toMutableList()
+            val issuer = moveData.moveAmount.issuer
+            val owner = moveData.moveAmount.owner
+            val amount = moveData.moveAmount.amount.quantity
+            val currencyCode = moveData.moveAmount.amount.token.product.currencyCode
+            println("\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")
+            println("MoveData: issuer: $issuer\n owner: $owner\n amount: $amount\n currencyCode: $currencyCode\n ourIdentitiy: $ourIdentity")
+            println("\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")
+
+            val myCashCriteria = QueryCriteria.FungibleAssetQueryCriteria(issuer = listOf(issuer),
+                    owner = listOf(owner),
+                    status = Vault.StateStatus.UNCONSUMED
+            )
+
+            val unconsumedInputs = builder {
+                val currencyIndex = MyCashSchemaV1.PersistentMyCash::currencyCode.equal(currencyCode)
+                val currencyCriteria = QueryCriteria.VaultCustomQueryCriteria(currencyIndex)
+                val criteria = myCashCriteria.and(currencyCriteria)
+                serviceHub.vaultService.queryBy<MyCash>(criteria).states
+            }
+
+            println("\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")
+            println("SIZE: "+unconsumedInputs.size)
+            println("\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")
+
+            var inputSum = 0L
+
+            for (input in unconsumedInputs){
+                // The below condition is to avoid double spending in case the flow initiator passed more than one move amount of the same issuer/owner/currency code
+                if (!inputs.contains(input)) {
+                    inputSum += input.state.data.amount.quantity
+                    inputs.add(input)
+                }
+                // Gather enough cash
+                if (inputSum > amount) {
+                    break
                 }
             }
 
-            return subFlow(signTransactionFlow)
+            println("\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")
+            println("inputSum: $inputSum\n amount: $amount")
+            println("\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")
+
+            require(inputSum >= amount) { "$owner doesn't have enough cash! Only $inputSum was found for move amount: {Issuer: $issuer, Owner: $owner, Amount: $amount, Currency Code: $currencyCode}" }
+
+            val change = inputSum - amount
+            if (change > 0) {
+                val changeAmount = MyCash(owner, Amount(change, Issued(issuer.ref(OpaqueBytes.of(0x01)), Currency.getInstance(currencyCode))))
+                changeAmounts.add(changeAmount)
+            }
+
+            println("\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")
+            println("INSIDE: inputs.size: ${inputs.size}\n changeAmunts.size: ${changeAmounts.size}")
+            println("\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")
+
+            counterFlow.send(moveData.copy(inputs = inputs, changeAmounts = changeAmounts))
         }
     }
+
+    @CordaSerializable
+    data class MoveData (val moveAmount: MyCash, val inputs: MutableList<StateAndRef<MyCash>>, val changeAmounts: MutableList<MyCash>)
+
+
+
+    /*@InitiatedBy(Initiator::class)
+    class Acceptor(val counterFlow: FlowSession) : FlowLogic<SignedTransaction>() {
+        @Suspendable
+        override fun call(): SignedTransaction {
+            val signTransactionFlow = object : SignTransactionFlow(counterFlow) {
+                override fun checkTransaction(stx: SignedTransaction) = requireThat {
+                    val myCashOutputs = stx.tx.outputs.filter {
+                        val myCash = it.data as? MyCash
+                        if (myCash != null)
+                            myCash.owner == counterFlow.counterparty
+                        else
+                            false
+                    }
+                    "This must be a MyCash transaction." using (myCashOutputs.isNotEmpty())
+                }
+            }
+            return subFlow(signTransactionFlow)
+        }
+    }*/
 }

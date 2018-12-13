@@ -123,13 +123,25 @@ class MyCashContractTests {
     }
 
     @Test
+    fun `EXIT transaction issuers must sign the transaction`() {
+        ledgerServices.ledger {
+            transaction {
+                input(MyCash_Contract_ID, MyCash(bank1.party, aCorp.party, 100L, currencyCode1))
+                input(MyCash_Contract_ID, MyCash(bank2.party, bCorp.party, 100L, currencyCode2))
+                command(listOf(bank1.publicKey, aCorp.publicKey, bCorp.publicKey), MyCashContract.Commands.Exit())
+                `fails with`("Exit key owners must sign MyCash EXIT transaction.")
+            }
+        }
+    }
+
+    @Test
     fun `EXIT transaction owners must sign the transaction`() {
         ledgerServices.ledger {
             transaction {
                 input(MyCash_Contract_ID, MyCash(bank1.party, aCorp.party, 100L, currencyCode1))
                 input(MyCash_Contract_ID, MyCash(bank2.party, bCorp.party, 100L, currencyCode2))
-                command(listOf(aCorp.publicKey), MyCashContract.Commands.Exit())
-                `fails with`("Owners must sign MyCash EXIT transaction.")
+                command(listOf(bank1.publicKey, bank2.publicKey, aCorp.publicKey), MyCashContract.Commands.Exit())
+                `fails with`("Exit key owners must sign MyCash EXIT transaction.")
             }
         }
     }

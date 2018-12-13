@@ -67,7 +67,7 @@ class MyCashContract : Contract {
                     "There shouldn't be any outputs created." using (outputs.isEmpty())
 
                     // Signatures
-                    "Owners must sign MyCash EXIT transaction." using command.signers.containsAll(inputs.flatMap { it.exitKeys }.distinct())
+                    "Exit key owners must sign MyCash EXIT transaction." using command.signers.containsAll(inputs.flatMap { it.exitKeys })
                 }
             }
 
