@@ -7,44 +7,48 @@ import net.corda.core.contracts.CommandAndState
 import net.corda.core.contracts.FungibleAsset
 import net.corda.core.contracts.Issued
 import net.corda.core.identity.AbstractParty
+import net.corda.core.identity.Party
 import net.corda.core.schemas.MappedSchema
 import net.corda.core.schemas.PersistentState
 import net.corda.core.schemas.QueryableState
 import net.corda.core.utilities.OpaqueBytes
 import java.util.*
 
-data class MyCash(val issuer: AbstractParty,
-                  override val owner: AbstractParty,
+data class MyCash(override val owner: Party,
                   override val amount: Amount<Issued<Currency>>):
         FungibleAsset<Currency>, QueryableState {
 
-    init{
-        require(amount.quantity > 0L) { " MyCash amount cannot be zero " }
-        require(issuer == amount.token.issuer.party) { " MyCash issuer cannot be different from Currency issuer " }
-    }
-
-    constructor(issuer: AbstractParty,
-                owner: AbstractParty,
+    constructor(issuer: Party,
+                owner: Party,
                 amount: Long,
                 currencyCode: String):
-            this(issuer, owner, Amount(amount, Issued(issuer.ref(OpaqueBytes.of(0x01)), Currency.getInstance(currencyCode))))
+            this(owner, Amount(amount, Issued(issuer.ref(OpaqueBytes.of(0x01)), Currency.getInstance(currencyCode)))) {
+        require(amount > 0L) { " MyCash amount cannot be zero " }
+    }
+
+    val issuer
+        get() = amount.token.issuer.party as? Party ?: throw Exception("Issuer is not of type Party")
 
     // Owner should be aware of this state
     override val participants
         get() = listOf(owner)
 
-    // Owner must sign exit command to destroy the cash amount (i.e. move it off-ledger)
+    // Issuer and owner must sign EXIT command
     override val exitKeys
-        get() = listOf(owner.owningKey)
+        get() = setOf(issuer.owningKey, owner.owningKey)
 
     override fun withNewOwner(newOwner: AbstractParty): CommandAndState {
-        val updatedCash = copy(owner = newOwner)
-        return CommandAndState(MyCashContract.Commands.Move(), updatedCash)
+        if (newOwner is Party) return CommandAndState(MyCashContract.Commands.Move(), copy(owner = newOwner))
+        else {
+            throw Exception("New owner is not of type Party")
+        }
     }
 
     override fun withNewOwnerAndAmount(newAmount: Amount<Issued<Currency>>, newOwner: AbstractParty): FungibleAsset<Currency> {
-        val updatedCash = copy(owner = newOwner, amount = amount.copy(newAmount.quantity))
-        return updatedCash
+        if (newOwner is Party) return copy(owner = newOwner, amount = amount.copy(newAmount.quantity))
+        else {
+            throw Exception("New owner is not of type Party")
+        }
     }
 
     override fun supportedSchemas(): Iterable<MappedSchema> = listOf(MyCashSchemaV1)
@@ -52,8 +56,8 @@ data class MyCash(val issuer: AbstractParty,
     override fun generateMappedObject(schema: MappedSchema): PersistentState {
         return when (schema) {
             is MyCashSchemaV1 -> MyCashSchemaV1.PersistentMyCash(
-                    this.issuer.nameOrNull().toString(),
-                    this.owner.nameOrNull().toString(),
+                    this.issuer.name.toString(),
+                    this.owner.name.toString(),
                     this.amount.quantity,
                     this.amount.token.product.currencyCode
             )
