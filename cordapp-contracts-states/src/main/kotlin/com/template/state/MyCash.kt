@@ -18,16 +18,19 @@ data class MyCash(override val owner: Party,
                   override val amount: Amount<Issued<Currency>>):
         FungibleAsset<Currency>, QueryableState {
 
+    init{
+        require(amount.quantity > 0L) { " MyCash amount cannot be zero " }
+        require(amount.token.issuer.party is Party) { "Issuer is not of type Party" }
+    }
+
     constructor(issuer: Party,
                 owner: Party,
                 amount: Long,
                 currencyCode: String):
-            this(owner, Amount(amount, Issued(issuer.ref(OpaqueBytes.of(0x01)), Currency.getInstance(currencyCode)))) {
-        require(amount > 0L) { " MyCash amount cannot be zero " }
-    }
+            this(owner, Amount(amount, Issued(issuer.ref(OpaqueBytes.of(0x01)), Currency.getInstance(currencyCode))))
 
     val issuer
-        get() = amount.token.issuer.party as? Party ?: throw Exception("Issuer is not of type Party")
+        get() = amount.token.issuer.party as Party
 
     // Owner should be aware of this state
     override val participants
@@ -40,14 +43,14 @@ data class MyCash(override val owner: Party,
     override fun withNewOwner(newOwner: AbstractParty): CommandAndState {
         if (newOwner is Party) return CommandAndState(MyCashContract.Commands.Move(), copy(owner = newOwner))
         else {
-            throw Exception("New owner is not of type Party")
+            throw IllegalArgumentException("New owner is not of type Party")
         }
     }
 
     override fun withNewOwnerAndAmount(newAmount: Amount<Issued<Currency>>, newOwner: AbstractParty): FungibleAsset<Currency> {
         if (newOwner is Party) return copy(owner = newOwner, amount = amount.copy(newAmount.quantity))
         else {
-            throw Exception("New owner is not of type Party")
+            throw IllegalArgumentException("New owner is not of type Party")
         }
     }
 

@@ -6,6 +6,7 @@ import com.template.state.MyCash
 import net.corda.core.contracts.*
 import net.corda.core.crypto.SecureHash
 import net.corda.core.flows.*
+import net.corda.core.identity.AnonymousParty
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.utilities.ProgressTracker
@@ -16,6 +17,10 @@ object ExitFlow {
     @InitiatingFlow
     @StartableByRPC
     class Initiator(val inputs: List<StateRef>) : FlowLogic<SignedTransaction>() {
+
+        init {
+            require(inputs.isNotEmpty()) { "Inputs list cannot be empty" }
+        }
 
         constructor(txSecurehash: SecureHash, txIndex: Int) : this(listOf(StateRef(txSecurehash, txIndex)))
         constructor(txHash: String, txIndex: Int) : this(SecureHash.parse(txHash), txIndex)
@@ -54,12 +59,11 @@ object ExitFlow {
         override fun call(): SignedTransaction {
             // Stage 1.
             progressTracker.currentStep = GENERATING_TRANSACTION
-            val myCashInputs: List<StateAndRef<MyCash>>
-            try {
-                myCashInputs = inputs.map { serviceHub.toStateAndRef<MyCash>(it) }
+            val myCashInputs: List<StateAndRef<MyCash>> = try {
+                inputs.map { serviceHub.toStateAndRef<MyCash>(it) }
             }
             catch (e: TransactionResolutionException) {
-                throw Exception("$ourIdentity cannot EXIT one of the passed MyCash states, because it wasn't one of the participants at the time of their ISSUE")
+                throw FlowException("$ourIdentity cannot EXIT one of the passed MyCash states, because it wasn't one of the participants at the time of their ISSUE")
             }
             require(myCashInputs.map { it.state.notary }.distinct().size == 1) { "Notary must be identical across all inputs" }
 
@@ -86,7 +90,9 @@ object ExitFlow {
             // Stage 4.
             progressTracker.currentStep = GATHERING_SIGS
             // Send the state to the counterparty, and receive it back with their signature.
-            val requiredParties = requiredSigs.minus(ourIdentity.owningKey).map { serviceHub.identityService.partyFromKey(it) }
+            val requiredParties = requiredSigs.minus(ourIdentity.owningKey).map {
+                serviceHub.identityService.requireWellKnownPartyFromAnonymous(AnonymousParty(it))
+            }
             val counterParties = requiredParties.map { initiateFlow(it!!) }
             val fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, counterParties, GATHERING_SIGS.childProgressTracker()))
 

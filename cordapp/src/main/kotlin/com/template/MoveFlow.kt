@@ -31,11 +31,15 @@ object MoveFlow {
     @CordaSerializable
     data class MoveDataIn (val utxoList: MutableList<StateAndRef<MyCash>>, val changeAmounts: MutableList<MyCash>)
 
+    // Composite key that is used to group move amounts
+    data class Key(val issuer: Party, val owner: Party, val currencyCode: String)
+
     @InitiatingFlow
     @StartableByRPC
     class Initiator(val moveAmounts: List<MyCash>, val newOwner: Party) : FlowLogic<SignedTransaction>() {
 
         init {
+            require(moveAmounts.isNotEmpty()) { "Move amounts list cannot be empty" }
             require(moveAmounts.filter { it.amount.quantity <= 0 }.isEmpty()) { "Move amount must be greater than zero" }
         }
 
@@ -52,24 +56,14 @@ object MoveFlow {
             object FETCHING_INPUTS : Step("Fetching owners' input states.") {
                 override fun childProgressTracker() = Acceptor.tracker()
             }
-            object GENERATING_TRANSACTION : Step("Generating transaction based on MyCash MOVE flow.")
-            object VERIFYING_TRANSACTION : Step("Verifying contract constraints.")
-            object SIGNING_TRANSACTION : Step("Signing transaction with our private key.")
-            object GATHERING_SIGS : Step("Gathering the counterparties' signatures.") {
-                override fun childProgressTracker() = MoveSigsInitiator.tracker()
-            }
-            object FINALISING_TRANSACTION : Step("Obtaining notary signature and recording transaction.") {
-                override fun childProgressTracker() = FinalityFlow.tracker()
+            object SIGN_FINALIZE : Step("Sign transaction and finalize it.") {
+                override fun childProgressTracker() = SignFinalizeInitiator.tracker()
             }
 
             fun tracker() = ProgressTracker(
                     CONSOLIDATE_INPUTS,
                     FETCHING_INPUTS,
-                    GENERATING_TRANSACTION,
-                    VERIFYING_TRANSACTION,
-                    SIGNING_TRANSACTION,
-                    GATHERING_SIGS,
-                    FINALISING_TRANSACTION
+                    SIGN_FINALIZE
             )
         }
 
@@ -82,37 +76,17 @@ object MoveFlow {
         override fun call(): SignedTransaction {
             // Stage 1.
             progressTracker.currentStep = CONSOLIDATE_INPUTS
-            // We will consolidate move amounts by owner/issuer/currency code to minimize
+            // We will consolidate move amounts by owner/issuer/currency then group them by owner to minimize
             // the number of trips to owners' vaults
-            val consolidatedMoveAmounts = mutableListOf<MyCash>()
-            if (moveAmounts.size > 1) {
-                val grpByOwner = moveAmounts.groupBy { it.owner }
-                for (byOwner in grpByOwner.values) {
-                    // *****BY OWNER: START*****"
-                    val grpByIssuer = byOwner.groupBy { it.issuer }
-                    for (byIssuer in grpByIssuer.values) {
-                        // *****BY ISSUER: START*****"
-                        val grpByCurrency = byIssuer.groupBy { it.amount.token.product.currencyCode }
-                        for (byCurrency in grpByCurrency.values) {
-                            // *****BY CURRENCY: START*****"
-                            var sum = 0L
-                            byCurrency.forEach { sum += it.amount.quantity }
-                            val totalMoveAmount = byCurrency[0].copy(amount = byCurrency[0].amount.copy(quantity = sum))
-                            consolidatedMoveAmounts.add(totalMoveAmount)
-                            // *****BY CURRENCY: END*****"
+            val consolidatedGroupedByOwner = moveAmounts
+                    .groupBy { Key(it.issuer, it.owner, it.amount.token.product.currencyCode) }
+                    .map {
+                        val sum = it.value.fold(0L) { sum, myCash ->
+                            sum + myCash.amount.quantity
                         }
-                        // *****BY ISSUER: START*****"
+                        MyCash(it.key.issuer, it.key.owner, sum, it.key.currencyCode)
                     }
-                    // "*****BY OWNER: END*****"
-                }
-            }
-            else
-                consolidatedMoveAmounts.add(moveAmounts.first())
-
-            // After consolidation; we will group the results by owner so we can visit each owner's vault only once to
-            // gather all the required UTXO to cover the consolidated move amounts
-            val consolidatedGroupedByOwner = consolidatedMoveAmounts.groupBy { it.owner }
-
+                    .toList().groupBy { it.owner }
 
             // Stage 2.
             progressTracker.currentStep = FETCHING_INPUTS
@@ -121,63 +95,26 @@ object MoveFlow {
             // This list will hold new outputs to return change to owners
             val changeAmounts = mutableListOf<MyCash>()
             // Query owners' vaults to gather UTXO's
-            for (moveAmount in consolidatedGroupedByOwner) {
+            consolidatedGroupedByOwner.forEach {
                 // Our key is the owner
-                val counterParty = initiateFlow(moveAmount.key)
-                val untrustedData = counterParty.sendAndReceive<MoveDataIn>(MoveDataOut(moveAmount.value))
-                val moveData = untrustedData.unwrap {
-                    it as? MoveDataIn ?: throw Exception("MOVE Initiator flow cannot parse the received data")
+                val counterParty = initiateFlow(it.key)
+                val untrustedData = counterParty.sendAndReceive<MoveDataIn>(MoveDataOut(it.value))
+                val moveData = untrustedData.unwrap {data ->
+                    data as? MoveDataIn ?: throw FlowException("MOVE Initiator flow cannot parse the received data")
                 }
                 inputs.addAll(moveData.utxoList)
                 changeAmounts.addAll(moveData.changeAmounts)
             }
-
-            // Stage 3.
-            progressTracker.currentStep = GENERATING_TRANSACTION
-            // Obtain a reference to the notary we want to use.
-            require (inputs.map { it.state.notary }.distinct().size == 1) { "Notary must be identical across all inputs" }
-            val notary = inputs[0].state.notary
-            // Generate an unsigned transaction.
             // All owners must sign the move transaction
             val requiredParties = inputs.map { it.state.data.owner }.distinct().plus(newOwner)
-            val txCommand = Command(MyCashContract.Commands.Move(), requiredParties.map { it.owningKey })
-            val txBuilder = TransactionBuilder(notary)
-                    .addCommand(txCommand)
 
-            // Add inputs
-            for (input in inputs) {
-                txBuilder.addInputState(input)
-            }
+            // Create outputs
+            val newOwnersAmounts = consolidatedGroupedByOwner.flatMap { it.value }.map { it.copy(owner = newOwner) }
+            val outputs = listOf(changeAmounts, newOwnersAmounts).flatMap { it }
 
-            // Add outputs
-            for (moveAmount in consolidatedGroupedByOwner.flatMap { it.value }) {
-                txBuilder.addOutputState(moveAmount.copy(owner = newOwner), MyCash_Contract_ID)
-            }
-
-            // Add change amounts
-            for (changeAmount in changeAmounts) {
-                txBuilder.addOutputState(changeAmount, MyCash_Contract_ID)
-            }
-
-            // Stage 4.
-            progressTracker.currentStep = VERIFYING_TRANSACTION
-            // Verify that the transaction is valid.
-            txBuilder.verify(serviceHub)
-
-            // Stage 5.
-            progressTracker.currentStep = SIGNING_TRANSACTION
-            // Sign the transaction.
-            val partSignedTx = serviceHub.signInitialTransaction(txBuilder)
-
-            // Stage 6.
-            progressTracker.currentStep = GATHERING_SIGS
-            // Send the state to the counterparty, and receive it back with their signature.
-            val fullySignedTx = subFlow(MoveSigsInitiator(partSignedTx, requiredParties.minus(ourIdentity), GATHERING_SIGS.childProgressTracker()))
-
-            // Stage 7.
-            progressTracker.currentStep = FINALISING_TRANSACTION
-            // Notarise and record the transaction in both parties' vaults.
-            return subFlow(FinalityFlow(fullySignedTx, FINALISING_TRANSACTION.childProgressTracker()))
+            // Stage 3.
+            progressTracker.currentStep = SIGN_FINALIZE
+            return subFlow(SignFinalizeInitiator(inputs, outputs, requiredParties, SIGN_FINALIZE.childProgressTracker()))
         }
     }
 
@@ -208,7 +145,7 @@ object MoveFlow {
             progressTracker.currentStep = UNWRAP_DATA
             val untrustedData = counterFlow.receive<MoveDataOut>()
             val moveData = untrustedData.unwrap {
-                it as? MoveDataOut ?: throw Exception("MOVE Acceptor flow cannot parse the received data")
+                it as? MoveDataOut ?: throw FlowException("MOVE Acceptor flow cannot parse the received data")
             }
 
             val utxoList = mutableListOf<StateAndRef<MyCash>>()
@@ -241,12 +178,14 @@ object MoveFlow {
                     utxoSum += utxo.state.data.amount.quantity
                     utxoList.add(utxo)
                     // Gather enough cash
-                    if (utxoSum > amount) {
+                    if (utxoSum >= amount) {
                         break
                     }
                 }
 
-                require(utxoSum >= amount) { "$owner doesn't have enough cash! Only $utxoSum was found for move amount: {Issuer: $issuer, Owner: $owner, Amount: $amount, Currency Code: $currencyCode}" }
+                if (utxoSum < amount) {
+                    throw FlowException("$owner doesn't have enough cash! Only $utxoSum was found for move amount: {Issuer: $issuer, Owner: $owner, Amount: $amount, Currency Code: $currencyCode}")
+                }
 
                 // Step 4
                 progressTracker.currentStep = CREATE_CHANGE_INPUTS
@@ -264,27 +203,75 @@ object MoveFlow {
     }
 
     @InitiatingFlow
-    class MoveSigsInitiator(val partSignedTx: SignedTransaction, val requiredParties: List<Party>, override val progressTracker: ProgressTracker): FlowLogic<SignedTransaction>() {
+    class SignFinalizeInitiator(val inputs: List<StateAndRef<MyCash>>, val outputs: List<MyCash>,
+                                val requiredParties: List<Party>,
+                                override val progressTracker: ProgressTracker): FlowLogic<SignedTransaction>() {
 
         companion object {
+
+            object GENERATING_TRANSACTION : Step("Generating transaction.")
+            object VERIFYING_TRANSACTION : Step("Verifying contract constraints.")
+            object SIGNING_TRANSACTION : Step("Signing transaction with our private key.")
             object GATHERING_SIGS : Step("Gathering the counterparties' signatures.") {
                 override fun childProgressTracker() = CollectSignaturesFlow.tracker()
             }
+            object FINALISING_TRANSACTION : Step("Obtaining notary signature and recording transaction.") {
+                override fun childProgressTracker() = FinalityFlow.tracker()
+            }
 
-            fun tracker() = ProgressTracker(GATHERING_SIGS)
+            fun tracker() = ProgressTracker(
+                    GENERATING_TRANSACTION,
+                    VERIFYING_TRANSACTION,
+                    SIGNING_TRANSACTION,
+                    GATHERING_SIGS,
+                    FINALISING_TRANSACTION
+            )
         }
 
         @Suspendable
         override fun call(): SignedTransaction {
+
+            // Stage 1.
+            progressTracker.currentStep = GENERATING_TRANSACTION
+            // Obtain a reference to the notary we want to use.
+            require (inputs.map { it.state.notary }.distinct().size == 1) { "Notary must be identical across all inputs" }
+            val notary = inputs[0].state.notary
+            // Generate an unsigned transaction.
+            val txCommand = Command(MyCashContract.Commands.Move(), requiredParties.map { it.owningKey })
+            val txBuilder = TransactionBuilder(notary)
+                    .addCommand(txCommand)
+
+            // Add inputs
+            inputs.forEach { txBuilder.addInputState(it) }
+
+            // Add outputs
+            outputs.forEach { txBuilder.addOutputState(it, MyCash_Contract_ID) }
+
+            // Stage 2.
+            progressTracker.currentStep = VERIFYING_TRANSACTION
+            // Verify that the transaction is valid.
+            txBuilder.verify(serviceHub)
+
+            // Stage 3.
+            progressTracker.currentStep = SIGNING_TRANSACTION
+            // Sign the transaction.
+            val partSignedTx = serviceHub.signInitialTransaction(txBuilder)
+
+            // Stage 4.
             progressTracker.currentStep = GATHERING_SIGS
-            val counterParties = requiredParties.map { initiateFlow(it) }
-            val signedTx = subFlow(CollectSignaturesFlow(partSignedTx, counterParties, GATHERING_SIGS.childProgressTracker()))
-            return signedTx
+            // Send the state to the counterparty, and receive it back with their signature.
+            val fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx,
+                    requiredParties.minus(ourIdentity).map { initiateFlow(it) }, GATHERING_SIGS.childProgressTracker()))
+
+            // Stage 5.
+            progressTracker.currentStep = FINALISING_TRANSACTION
+            // Notarise and record the transaction in both parties' vaults.
+            return subFlow(FinalityFlow(fullySignedTx, FINALISING_TRANSACTION.childProgressTracker()))
         }
     }
 
-    @InitiatedBy(MoveSigsInitiator::class)
-    class MoveSigsAcceptor(val counterFlow: FlowSession) : FlowLogic<SignedTransaction>() {
+    @InitiatedBy(SignFinalizeInitiator::class)
+    class SignFinalizeAcceptor(val counterFlow: FlowSession) : FlowLogic<SignedTransaction>() {
         @Suspendable
         override fun call(): SignedTransaction {
             val signTransactionFlow = object : SignTransactionFlow(counterFlow) {
