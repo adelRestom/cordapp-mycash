@@ -5,7 +5,10 @@ import com.template.contract.MyCashContract
 import com.template.contract.MyCashContract.Companion.MyCash_Contract_ID
 import com.template.schema.MyCashSchemaV1
 import com.template.state.MyCash
-import net.corda.core.contracts.*
+import net.corda.core.contracts.Amount
+import net.corda.core.contracts.Command
+import net.corda.core.contracts.Issued
+import net.corda.core.contracts.StateAndRef
 import net.corda.core.flows.*
 import net.corda.core.identity.Party
 import net.corda.core.node.services.Vault
@@ -56,13 +59,15 @@ object MoveFlow {
             object FETCHING_INPUTS : Step("Fetching owners' input states.") {
                 override fun childProgressTracker() = Acceptor.tracker()
             }
-            object SIGN_FINALIZE : Step("Sign transaction and finalize it.") {
-                override fun childProgressTracker() = SignFinalizeInitiator.tracker()
+            object GENERATING_TRANSACTION : Step("Generating transaction.")
+            object SIGN_FINALIZE : Step("Signing transaction and finalizing state.") {
+                override fun childProgressTracker() = SignFinalize.Initiator.tracker()
             }
 
             fun tracker() = ProgressTracker(
                     CONSOLIDATE_INPUTS,
                     FETCHING_INPUTS,
+                    GENERATING_TRANSACTION,
                     SIGN_FINALIZE
             )
         }
@@ -105,16 +110,33 @@ object MoveFlow {
                 inputs.addAll(moveData.utxoList)
                 changeAmounts.addAll(moveData.changeAmounts)
             }
-            // All owners must sign the move transaction
-            val requiredParties = inputs.map { it.state.data.owner }.distinct().plus(newOwner)
-
-            // Create outputs
-            val newOwnersAmounts = consolidatedGroupedByOwner.flatMap { it.value }.map { it.copy(owner = newOwner) }
-            val outputs = listOf(changeAmounts, newOwnersAmounts).flatMap { it }
 
             // Stage 3.
+            progressTracker.currentStep = GENERATING_TRANSACTION
+            // Obtain a reference to the notary we want to use
+            require (inputs.map { it.state.notary }.distinct().size == 1) { "Notary must be identical across all inputs" }
+            val notary = inputs[0].state.notary
+
+            // Generate an unsigned transaction
+            val requiredParties = inputs.map { it.state.data.owner }.distinct().plus(newOwner)
+            val txCommand = Command(MyCashContract.Commands.Move(), requiredParties.map { it.owningKey })
+            val txBuilder = TransactionBuilder(notary)
+                    .addCommand(txCommand)
+            // Add inputs
+            inputs.forEach { txBuilder.addInputState(it) }
+            // Add outputs
+            consolidatedGroupedByOwner.flatMap { it.value }.forEach {moveAmount ->
+                txBuilder.addOutputState(moveAmount.copy(owner = newOwner), MyCash_Contract_ID)
+            }
+            // Add change amounts
+            changeAmounts.forEach {
+                txBuilder.addOutputState(it, MyCash_Contract_ID)
+            }
+
+            // Stage 4.
             progressTracker.currentStep = SIGN_FINALIZE
-            return subFlow(SignFinalizeInitiator(inputs, outputs, requiredParties, SIGN_FINALIZE.childProgressTracker()))
+            // Signing transaction and finalizing state
+            return subFlow(SignFinalize.Initiator(txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker()))
         }
     }
 
@@ -199,94 +221,6 @@ object MoveFlow {
             // Step 5
             progressTracker.currentStep = SEND_DATA
             counterFlow.send(MoveDataIn(utxoList, changeAmounts))
-        }
-    }
-
-    @InitiatingFlow
-    class SignFinalizeInitiator(val inputs: List<StateAndRef<MyCash>>, val outputs: List<MyCash>,
-                                val requiredParties: List<Party>,
-                                override val progressTracker: ProgressTracker): FlowLogic<SignedTransaction>() {
-
-        companion object {
-
-            object GENERATING_TRANSACTION : Step("Generating transaction.")
-            object VERIFYING_TRANSACTION : Step("Verifying contract constraints.")
-            object SIGNING_TRANSACTION : Step("Signing transaction with our private key.")
-            object GATHERING_SIGS : Step("Gathering the counterparties' signatures.") {
-                override fun childProgressTracker() = CollectSignaturesFlow.tracker()
-            }
-            object FINALISING_TRANSACTION : Step("Obtaining notary signature and recording transaction.") {
-                override fun childProgressTracker() = FinalityFlow.tracker()
-            }
-
-            fun tracker() = ProgressTracker(
-                    GENERATING_TRANSACTION,
-                    VERIFYING_TRANSACTION,
-                    SIGNING_TRANSACTION,
-                    GATHERING_SIGS,
-                    FINALISING_TRANSACTION
-            )
-        }
-
-        @Suspendable
-        override fun call(): SignedTransaction {
-
-            // Stage 1.
-            progressTracker.currentStep = GENERATING_TRANSACTION
-            // Obtain a reference to the notary we want to use.
-            require (inputs.map { it.state.notary }.distinct().size == 1) { "Notary must be identical across all inputs" }
-            val notary = inputs[0].state.notary
-            // Generate an unsigned transaction.
-            val txCommand = Command(MyCashContract.Commands.Move(), requiredParties.map { it.owningKey })
-            val txBuilder = TransactionBuilder(notary)
-                    .addCommand(txCommand)
-
-            // Add inputs
-            inputs.forEach { txBuilder.addInputState(it) }
-
-            // Add outputs
-            outputs.forEach { txBuilder.addOutputState(it, MyCash_Contract_ID) }
-
-            // Stage 2.
-            progressTracker.currentStep = VERIFYING_TRANSACTION
-            // Verify that the transaction is valid.
-            txBuilder.verify(serviceHub)
-
-            // Stage 3.
-            progressTracker.currentStep = SIGNING_TRANSACTION
-            // Sign the transaction.
-            val partSignedTx = serviceHub.signInitialTransaction(txBuilder)
-
-            // Stage 4.
-            progressTracker.currentStep = GATHERING_SIGS
-            // Send the state to the counterparty, and receive it back with their signature.
-            val fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx,
-                    requiredParties.minus(ourIdentity).map { initiateFlow(it) }, GATHERING_SIGS.childProgressTracker()))
-
-            // Stage 5.
-            progressTracker.currentStep = FINALISING_TRANSACTION
-            // Notarise and record the transaction in both parties' vaults.
-            return subFlow(FinalityFlow(fullySignedTx, FINALISING_TRANSACTION.childProgressTracker()))
-        }
-    }
-
-    @InitiatedBy(SignFinalizeInitiator::class)
-    class SignFinalizeAcceptor(val counterFlow: FlowSession) : FlowLogic<SignedTransaction>() {
-        @Suspendable
-        override fun call(): SignedTransaction {
-            val signTransactionFlow = object : SignTransactionFlow(counterFlow) {
-                override fun checkTransaction(stx: SignedTransaction) = requireThat {
-                    val myCashOutputs = stx.tx.outputs.filter {
-                        val myCash = it.data as? MyCash
-                        if (myCash != null)
-                            myCash.owner == ourIdentity
-                        else
-                            false
-                    }
-                    "This must be a MyCash transaction." using (myCashOutputs.isNotEmpty())
-                }
-            }
-            return subFlow(signTransactionFlow)
         }
     }
 }

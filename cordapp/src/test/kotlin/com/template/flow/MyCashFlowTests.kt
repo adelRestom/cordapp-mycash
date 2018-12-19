@@ -3,6 +3,7 @@ package com.template.flow
 import com.template.ExitFlow
 import com.template.IssueFlow
 import com.template.MoveFlow
+import com.template.SignFinalize
 import com.template.state.MyCash
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.node.services.Vault
@@ -43,10 +44,8 @@ class MyCashFlowTests {
         cCorp = network.createPartyNode(legalName = CordaX500Name(organisation = "Corp C", locality = "Moscow", country = "RU"))
         myCash1 = MyCash(bank1.info.singleIdentity(), aCorp.info.singleIdentity(), amount1, currencyCode1)
         myCash2 = MyCash(bank2.info.singleIdentity(), bCorp.info.singleIdentity(), amount2, currencyCode2)
-        listOf(aCorp, bCorp, cCorp, bank1, bank2).forEach { it.registerInitiatedFlow(IssueFlow.Acceptor::class.java) }
         listOf(aCorp, bCorp, cCorp, bank1, bank2).forEach { it.registerInitiatedFlow(MoveFlow.Acceptor::class.java) }
-        listOf(aCorp, bCorp, cCorp, bank1, bank2).forEach { it.registerInitiatedFlow(MoveFlow.SignFinalizeAcceptor::class.java) }
-        listOf(aCorp, bCorp, cCorp, bank1, bank2).forEach { it.registerInitiatedFlow(ExitFlow.Acceptor::class.java) }
+        listOf(aCorp, bCorp, cCorp, bank1, bank2).forEach { it.registerInitiatedFlow(SignFinalize.Acceptor::class.java) }
         network.runNetwork()
     }
 
@@ -55,7 +54,7 @@ class MyCashFlowTests {
         network.stopNodes()
     }
 
-    /*@Test
+    @Test
     fun `ISSUE transaction is signed by the issuers and the owners`() {
         val flow = IssueFlow.Initiator(listOf(myCash1, myCash2))
         val future = bank1.startFlow(flow)
@@ -78,7 +77,7 @@ class MyCashFlowTests {
     }
 
     @Test
-    fun `Issue flow recorded transaction has no inputs and one or more MyCash outputs`() {
+    fun `ISSUE flow recorded transaction has no inputs and one or more MyCash outputs`() {
         val flow = IssueFlow.Initiator(listOf(myCash1, myCash2))
         val future = bank1.startFlow(flow)
         network.runNetwork()
@@ -199,7 +198,7 @@ class MyCashFlowTests {
             val myCash = bCorp.services.vaultService.queryBy<MyCash>(unconsumedCriteria).states
             assert(myCash.isEmpty())
         }
-    }*/
+    }
 
     @Test
     fun `Recorded MOVE MyCash transaction has one or more MyCash inputs and one or more MyCash outputs`() {
@@ -256,7 +255,7 @@ class MyCashFlowTests {
         }
     }
 
-    /*@Test
+    @Test
     fun `EXIT flow creates new MyCash states in old and new owners' vaults`() {
         // Create MyCash
         // aCorp will have (100 USD from bank1, 50 GBP from bank1)
@@ -333,5 +332,5 @@ class MyCashFlowTests {
             // cCorp received 20 USD from bank2/bCorp
             assert(myCashList.map { it.state.data }.contains(co5))
         }
-    }*/
+    }
 }
