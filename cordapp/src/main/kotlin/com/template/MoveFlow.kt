@@ -10,6 +10,7 @@ import net.corda.core.contracts.Command
 import net.corda.core.contracts.Issued
 import net.corda.core.contracts.StateAndRef
 import net.corda.core.flows.*
+import net.corda.core.identity.AnonymousParty
 import net.corda.core.identity.Party
 import net.corda.core.node.services.Vault
 import net.corda.core.node.services.queryBy
@@ -136,7 +137,7 @@ object MoveFlow {
             // Stage 4.
             progressTracker.currentStep = SIGN_FINALIZE
             // Signing transaction and finalizing state
-            return subFlow(SignFinalize.Initiator(txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker()))
+            return subFlow(SignFinalize.Initiator(txBuilder = txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker()))
         }
     }
 

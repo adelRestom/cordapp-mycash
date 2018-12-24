@@ -30,8 +30,8 @@ class MyCashContract : Contract {
                     "At least one output should be created." using (outputs.isNotEmpty())
 
                     // Signatures
-                    "Issuers must sign MyCash ISSUE transaction." using command.signers.containsAll(outputs.map { it.issuer.owningKey })
-                    "Owners must sign MyCash ISSUE transaction." using command.signers.containsAll(outputs.map { it.owner.owningKey })
+//                    "Issuers must sign MyCash ISSUE transaction." using command.signingParties.containsAll(outputs.map { it.issuer })
+//                    "Owners must sign MyCash ISSUE transaction." using command.signingParties.containsAll(outputs.map { it.owner })
 
                     // Business logic
                     "Issuers and owners cannot be the same entity." using outputs.filter { it.issuer == it.owner }.isEmpty()
@@ -45,7 +45,7 @@ class MyCashContract : Contract {
                     "At least one output should be created." using (outputs.isNotEmpty())
 
                     // Signatures
-                    "Previous owners must sign MyCash MOVE transaction." using command.signers.containsAll(inputs.map { it.owner.owningKey })
+                    "Previous owners must sign MyCash MOVE transaction." using command.signingParties.containsAll(inputs.map { it.owner })
 
                     // Business logic
                     val inOut = listOf(inputs, outputs).flatMap { it }

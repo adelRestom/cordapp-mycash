@@ -56,7 +56,8 @@ class MyCashFlowTests {
 
     @Test
     fun `ISSUE transaction is signed by the issuers and the owners`() {
-        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2))
+        // Issue anonymously
+        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2), true)
         val future = bank1.startFlow(flow)
         network.runNetwork()
         val signedTx = future.getOrThrow()
@@ -66,7 +67,8 @@ class MyCashFlowTests {
 
     @Test
     fun `ISSUE flow records a transaction in participants' transaction storage`() {
-        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2))
+        // Issue anonymously
+        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2), true)
         val future = bank1.startFlow(flow)
         network.runNetwork()
         val signedTx = future.getOrThrow()
@@ -78,7 +80,8 @@ class MyCashFlowTests {
 
     @Test
     fun `ISSUE flow recorded transaction has no inputs and one or more MyCash outputs`() {
-        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2))
+        // Issue anonymously
+        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2), true)
         val future = bank1.startFlow(flow)
         network.runNetwork()
         val signedTx = future.getOrThrow()
@@ -105,7 +108,8 @@ class MyCashFlowTests {
 
     @Test
     fun `ISSUE flow records the correct MyCash state in participants' vaults`() {
-        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2))
+        // Issue anonymously
+        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2), true)
         bank1.startFlow(flow)
         network.runNetwork()
 
@@ -256,7 +260,7 @@ class MyCashFlowTests {
     }
 
     @Test
-    fun `EXIT flow creates new MyCash states in old and new owners' vaults`() {
+    fun `MOVE flow creates new MyCash states in old and new owners' vaults`() {
         // Create MyCash
         // aCorp will have (100 USD from bank1, 50 GBP from bank1)
         val a1 = MyCash(bank1.info.singleIdentity(), aCorp.info.singleIdentity(), 100L, "USD")
