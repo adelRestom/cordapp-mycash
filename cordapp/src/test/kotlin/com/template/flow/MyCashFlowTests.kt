@@ -56,8 +56,7 @@ class MyCashFlowTests {
 
     @Test
     fun `ISSUE transaction is signed by the issuers and the owners`() {
-        // Issue anonymously
-        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2), true)
+        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2))
         val future = bank1.startFlow(flow)
         network.runNetwork()
         val signedTx = future.getOrThrow()
@@ -67,8 +66,7 @@ class MyCashFlowTests {
 
     @Test
     fun `ISSUE flow records a transaction in participants' transaction storage`() {
-        // Issue anonymously
-        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2), true)
+        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2))
         val future = bank1.startFlow(flow)
         network.runNetwork()
         val signedTx = future.getOrThrow()
@@ -80,8 +78,7 @@ class MyCashFlowTests {
 
     @Test
     fun `ISSUE flow recorded transaction has no inputs and one or more MyCash outputs`() {
-        // Issue anonymously
-        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2), true)
+        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2))
         val future = bank1.startFlow(flow)
         network.runNetwork()
         val signedTx = future.getOrThrow()
@@ -108,8 +105,7 @@ class MyCashFlowTests {
 
     @Test
     fun `ISSUE flow records the correct MyCash state in participants' vaults`() {
-        // Issue anonymously
-        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2), true)
+        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2))
         bank1.startFlow(flow)
         network.runNetwork()
 
@@ -135,9 +131,38 @@ class MyCashFlowTests {
     }
 
     @Test
+    fun `Anonymous ISSUE transaction is signed by anonymous parties`() {
+        // Issue anonymously
+        val flow = IssueFlow.Initiator(outputs = listOf(myCash1, myCash2), anonymous = true)
+        val future = bank1.startFlow(flow)
+        network.runNetwork()
+        val signedTx = future.getOrThrow()
+
+        for (node in listOf(aCorp, bCorp)) {
+            val recordedTx = node.services.validatedTransactions.getTransaction(signedTx.id)
+            // Transaction must not be signed with the known public key of the node
+            assert(!recordedTx!!.sigs.map { it.by }.contains(node.info.singleIdentity().owningKey))
+        }
+    }
+
+    @Test
+    fun `Known ISSUE transaction is signed by known parties`() {
+        val flow = IssueFlow.Initiator(outputs = listOf(myCash1, myCash2), anonymous = false)
+        val future = bank1.startFlow(flow)
+        network.runNetwork()
+        val signedTx = future.getOrThrow()
+
+        for (node in listOf(aCorp, bCorp)) {
+            val recordedTx = node.services.validatedTransactions.getTransaction(signedTx.id)
+            // Transaction must be signed with the known public key of the node
+            assert(recordedTx!!.sigs.map { it.by }.contains(node.info.singleIdentity().owningKey))
+        }
+    }
+
+    @Test
     fun `Recorded EXIT MyCash transaction has no outputs and one or more MyCash inputs`() {
         // Create MyCash
-        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2))
+        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2), true)
         bank1.startFlow(flow)
         network.runNetwork()
 

@@ -19,28 +19,25 @@ object IssueFlow {
     @StartableByRPC
     class Initiator(val outputs: List<MyCash>, val anonymous: Boolean = false) : FlowLogic<SignedTransaction>() {
 
-        constructor(issuer: Party,
-                    owner: Party,
-                    amount: Long,
-                    currencyCode: String):
-                this(listOf(MyCash(issuer, owner, amount, currencyCode)))
+        constructor(issuer: Party, owner: Party, amount: Long, currencyCode: String, anonymous: Boolean = false):
+                this(listOf(MyCash(issuer, owner, amount, currencyCode)), anonymous)
 
         /**
          * The progress tracker checkpoints each stage of the flow and outputs the specified messages when each
          * checkpoint is reached in the code. See the 'progressTracker.currentStep' expressions within the call() function.
          */
         companion object {
+            object GENERATING_TRANSACTION : Step("Generating transaction.")
             object GENERATE_CONFIDENTIAL_IDS : Step("Generating confidential identities for the transaction.") {
                 override fun childProgressTracker() = SwapIdentitiesFlow.tracker()
             }
-            object GENERATING_TRANSACTION : Step("Generating transaction.")
             object SIGN_FINALIZE : Step("Signing transaction and finalizing state.") {
                 override fun childProgressTracker() = SignFinalize.Initiator.tracker()
             }
 
             fun tracker() = ProgressTracker(
-                    GENERATE_CONFIDENTIAL_IDS,
                     GENERATING_TRANSACTION,
+                    GENERATE_CONFIDENTIAL_IDS,
                     SIGN_FINALIZE
             )
         }
