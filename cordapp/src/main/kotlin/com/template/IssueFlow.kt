@@ -4,11 +4,9 @@ import co.paralleluniverse.fibers.Suspendable
 import com.template.contract.MyCashContract
 import com.template.contract.MyCashContract.Companion.MyCash_Contract_ID
 import com.template.state.MyCash
-import net.corda.confidential.SwapIdentitiesFlow
 import net.corda.core.contracts.Command
 import net.corda.core.flows.FlowLogic
 import net.corda.core.flows.StartableByRPC
-import net.corda.core.identity.AnonymousParty
 import net.corda.core.identity.Party
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
@@ -28,15 +26,17 @@ object IssueFlow {
          */
         companion object {
             object GENERATING_TRANSACTION : Step("Generating transaction.")
-            object GENERATE_CONFIDENTIAL_IDS : Step("Generating confidential identities for the transaction.") {
-                override fun childProgressTracker() = SwapIdentitiesFlow.tracker()
+            object GENERATE_CONFIDENTIAL_STATES : Step("Generating confidential states.") {
+                override fun childProgressTracker() = AnonymizeFlow.EncryptStates.tracker()
             }
+            object GENERATE_CONFIDENTIAL_IDS : Step("Generating confidential identities for the transaction.")
             object SIGN_FINALIZE : Step("Signing transaction and finalizing state.") {
                 override fun childProgressTracker() = SignFinalize.Initiator.tracker()
             }
 
             fun tracker() = ProgressTracker(
                     GENERATING_TRANSACTION,
+                    GENERATE_CONFIDENTIAL_STATES,
                     GENERATE_CONFIDENTIAL_IDS,
                     SIGN_FINALIZE
             )
@@ -53,46 +53,38 @@ object IssueFlow {
             progressTracker.currentStep = GENERATING_TRANSACTION
             // Obtain a reference to the notary we want to use
             val notary = serviceHub.networkMapCache.notaryIdentities[0]
-
-            // Generate an unsigned transaction.
-            val requiredParties = outputs.flatMap{ listOf(it.issuer, it.owner) }.distinct()
+            val txBuilder = TransactionBuilder(notary)
             val txCommand: Command<MyCashContract.Commands.Issue>
+            val requiredParties = outputs.flatMap{ listOf(it.issuer, it.owner) }.distinct()
 
             if (anonymous) {
+                progressTracker.currentStep = GENERATE_CONFIDENTIAL_STATES
+                val anonymousStates = subFlow(AnonymizeFlow.EncryptStates(outputs,
+                        GENERATE_CONFIDENTIAL_STATES.childProgressTracker()))
+                // Add output states with anonymous issuers and owners
+                anonymousStates.first.forEach {
+                    txBuilder.addOutputState(it, MyCash_Contract_ID)
+                }
+
                 progressTracker.currentStep = GENERATE_CONFIDENTIAL_IDS
-                val anonymousParties = generateConfidentialIdentities(requiredParties.minus(ourIdentity))
-                txCommand = Command(MyCashContract.Commands.Issue(), anonymousParties.flatMap { listOf(it.first.owningKey, it.second.owningKey) })
+                // Required signers = anonymous issuers and owners + anonymous me
+                val anonymousParties = listOf(anonymousStates.first.flatMap { listOf(it.issuer, it.owner) },
+                                                        anonymousStates.second.map { it }).flatten()
+                // Anonymous parties are required to sign the transaction
+                txCommand = Command(MyCashContract.Commands.Issue(), anonymousParties.map { it.owningKey })
             }
             else {
                 txCommand = Command(MyCashContract.Commands.Issue(), requiredParties.map { it.owningKey })
+                outputs.forEach {
+                    txBuilder.addOutputState(it, MyCash_Contract_ID)
+                }
             }
-
-            val txBuilder = TransactionBuilder(notary)
-                    .addCommand(txCommand)
-            outputs.forEach { txBuilder.addOutputState(it, MyCash_Contract_ID) }
+            txBuilder.addCommand(txCommand)
 
             // Stage 2.
             progressTracker.currentStep = SIGN_FINALIZE
             // Signing transaction and finalizing state
             return subFlow(SignFinalize.Initiator(txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker(), anonymous = anonymous))
-        }
-
-        @Suspendable
-        private fun generateConfidentialIdentities(otherParties: List<Party>): List<Pair<AnonymousParty, AnonymousParty>> {
-            val anonymousParties = mutableListOf<Pair<AnonymousParty, AnonymousParty>>()
-            otherParties.forEach { otherParty ->
-                val confidentialIdentities = subFlow(SwapIdentitiesFlow(
-                        otherParty,
-                        false,
-                        GENERATE_CONFIDENTIAL_IDS.childProgressTracker()))
-                val anonymousMe = confidentialIdentities[ourIdentity]
-                        ?: throw IllegalArgumentException("Could not anonymise my identity.")
-                val anonymousOtherParty = confidentialIdentities[otherParty]
-                        ?: throw IllegalArgumentException("Could not anonymise other party's identity.")
-                anonymousParties.add(anonymousMe to anonymousOtherParty)
-            }
-
-            return anonymousParties
         }
     }
 }

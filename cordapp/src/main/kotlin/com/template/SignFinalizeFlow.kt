@@ -6,6 +6,7 @@ import com.template.state.MyCash
 import net.corda.core.contracts.requireThat
 import net.corda.core.flows.*
 import net.corda.core.identity.AnonymousParty
+import net.corda.core.identity.Party
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.utilities.ProgressTracker
@@ -90,14 +91,16 @@ object SignFinalize {
         override fun call(): SignedTransaction {
             val signTransactionFlow = object : SignTransactionFlow(counterFlow) {
                 override fun checkTransaction(stx: SignedTransaction) = requireThat {
-                    stx.tx.commands.forEach {
-                        when (it.value) {
+                    stx.tx.commands.forEach { command ->
+                        when (command.value) {
                             is MyCashContract.Commands.Issue -> {
-                                val myCashOutputs = stx.tx.outputs.filter {
-                                    it.data is MyCash
-                                            && ((it.data as MyCash).issuer == ourIdentity || (it.data as MyCash).owner == ourIdentity)
-                                }
+                                val myCashOutputs = stx.tx.outputs.filter { it.data is MyCash }.map { it.data as MyCash }
                                 "This must be a MyCash transaction." using (myCashOutputs.isNotEmpty())
+                                val filteredList = myCashOutputs.filter {
+                                    serviceHub.identityService.wellKnownPartyFromAnonymous(it.issuer) == ourIdentity
+                                            || serviceHub.identityService.wellKnownPartyFromAnonymous(it.owner) == ourIdentity
+                                }
+                                "ISSUE transaction does not contain the requested signer's identity." using (filteredList.isNotEmpty())
                             }
 
                             is MyCashContract.Commands.Move -> {
@@ -108,11 +111,13 @@ object SignFinalize {
                             }
 
                             is MyCashContract.Commands.Exit -> {
-                                val inputs = serviceHub.loadStates(stx.tx.inputs.toSet()).map { it.state.data }
-                                val myCashInputs = inputs.filter {
-                                    it is MyCash && it.exitKeys.contains(ourIdentity.owningKey)
-                                }
+                                val myCashInputs = serviceHub.loadStates(stx.tx.inputs.toSet()).map { it.state.data as MyCash }
                                 "This must be a MyCash transaction." using (myCashInputs.isNotEmpty())
+                                val filteredList = myCashInputs.filter {
+                                    serviceHub.identityService.wellKnownPartyFromAnonymous(it.issuer) == ourIdentity
+                                            || serviceHub.identityService.wellKnownPartyFromAnonymous(it.owner) == ourIdentity
+                                }
+                                "EXIT transaction does not contain the requested signer's identity." using (filteredList.isNotEmpty())
                             }
 
                             else -> throw FlowException("Unrecognised MyCash command")

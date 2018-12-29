@@ -10,6 +10,7 @@ import net.corda.core.contracts.Command
 import net.corda.core.contracts.Issued
 import net.corda.core.contracts.StateAndRef
 import net.corda.core.flows.*
+import net.corda.core.identity.AbstractParty
 import net.corda.core.identity.Party
 import net.corda.core.node.services.Vault
 import net.corda.core.node.services.queryBy
@@ -39,7 +40,7 @@ object MoveFlow {
 
     @InitiatingFlow
     @StartableByRPC
-    class Initiator(val moveAmounts: List<MyCash>, val newOwner: Party) : FlowLogic<SignedTransaction>() {
+    class Initiator(val moveAmounts: List<MyCash>, val newOwner: AbstractParty) : FlowLogic<SignedTransaction>() {
 
         init {
             require(moveAmounts.isNotEmpty()) { "Move amounts list cannot be empty" }
@@ -47,7 +48,7 @@ object MoveFlow {
         }
 
         // Constructor to move one amount
-        constructor(issuer: Party, owner: Party, amount: Long, currencyCode: String, newOwner: Party):
+        constructor(issuer: AbstractParty, owner: AbstractParty, amount: Long, currencyCode: String, newOwner: Party):
                 this(listOf(MyCash(issuer, owner, amount, currencyCode)), newOwner)
 
         /**
@@ -84,7 +85,7 @@ object MoveFlow {
             // We will consolidate move amounts by owner/issuer/currency then group them by owner to minimize
             // the number of trips to owners' vaults
             val consolidatedGroupedByOwner = moveAmounts
-                    .groupBy { Key(it.issuer, it.owner, it.amount.token.product.currencyCode) }
+                    .groupBy { Key(it.issuer as Party, it.owner as Party, it.amount.token.product.currencyCode) }
                     .map {
                         val sum = it.value.fold(0L) { sum, myCash ->
                             sum + myCash.amount.quantity
@@ -102,7 +103,7 @@ object MoveFlow {
             // Query owners' vaults to gather UTXO's
             consolidatedGroupedByOwner.forEach {
                 // Our key is the owner
-                val counterParty = initiateFlow(it.key)
+                val counterParty = initiateFlow(it.key as Party)
                 val untrustedData = counterParty.sendAndReceive<MoveDataIn>(MoveDataOut(it.value))
                 val moveData = untrustedData.unwrap {data ->
                     data as? MoveDataIn ?: throw FlowException("MOVE Initiator flow cannot parse the received data")

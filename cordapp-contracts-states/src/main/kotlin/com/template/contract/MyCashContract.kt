@@ -30,11 +30,11 @@ class MyCashContract : Contract {
                     "At least one output should be created." using (outputs.isNotEmpty())
 
                     // Signatures
-//                    "Issuers must sign MyCash ISSUE transaction." using command.signingParties.containsAll(outputs.map { it.issuer })
-//                    "Owners must sign MyCash ISSUE transaction." using command.signingParties.containsAll(outputs.map { it.owner })
+                    "Issuers must sign MyCash ISSUE transaction." using command.signers.containsAll(outputs.map { it.issuer.owningKey })
+                    "Owners must sign MyCash ISSUE transaction." using command.signers.containsAll(outputs.map { it.owner.owningKey })
 
                     // Business logic
-                    "Issuers and owners cannot be the same entity." using outputs.filter { it.issuer == it.owner }.isEmpty()
+                    "Issuers and owners cannot be the same entity." using outputs.filter { it.issuer.owningKey == it.owner.owningKey }.isEmpty()
                 }
             }
 
@@ -66,9 +66,6 @@ class MyCashContract : Contract {
                     // Input/output
                     "One or more inputs should be consumed during MyCash EXIT." using (inputs.isNotEmpty())
                     "There shouldn't be any outputs created." using (outputs.isEmpty())
-
-                    // Signatures
-                    "Exit key owners must sign MyCash EXIT transaction." using command.signers.containsAll(inputs.flatMap { it.exitKeys })
                 }
             }
 
