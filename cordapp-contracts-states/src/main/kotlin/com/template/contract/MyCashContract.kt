@@ -45,10 +45,10 @@ class MyCashContract : Contract {
                     "At least one output should be created." using (outputs.isNotEmpty())
 
                     // Signatures
-                    "Previous owners must sign MyCash MOVE transaction." using command.signingParties.containsAll(inputs.map { it.owner })
+                    //"Previous owners must sign MyCash MOVE transaction." using command.signers.containsAll(inputs.map { it.owner.owningKey })
 
                     // Business logic
-                    val inOut = listOf(inputs, outputs).flatMap { it }
+                    /*val inOut = listOf(inputs, outputs).flatMap { it }
                     val issuers = inOut.map { it.issuer }.distinct()
                     val currencyCodes = inOut.map { it.amount.token.product.currencyCode }.distinct()
                     for (issuer in issuers) {
@@ -57,7 +57,7 @@ class MyCashContract : Contract {
                             val outputSum = outputs.filter { it.issuer == issuer && it.amount.token.product.currencyCode == currencyCode }.map { it.amount.quantity }.sum()
                             "Inputs total amount (by issuer/currency code) must be equal to outputs total amount (by issuer/currency code)." using (inputSum == outputSum)
                         }
-                    }
+                    }*/
                 }
             }
 
@@ -66,6 +66,9 @@ class MyCashContract : Contract {
                     // Input/output
                     "One or more inputs should be consumed during MyCash EXIT." using (inputs.isNotEmpty())
                     "There shouldn't be any outputs created." using (outputs.isEmpty())
+
+                    // Signatures
+                    //"Exit key owners must sign MyCash EXIT transaction." using command.signers.containsAll(inputs.flatMap { it.exitKeys })
                 }
             }
 

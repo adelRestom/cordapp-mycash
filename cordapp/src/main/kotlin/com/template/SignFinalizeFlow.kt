@@ -6,7 +6,6 @@ import com.template.state.MyCash
 import net.corda.core.contracts.requireThat
 import net.corda.core.flows.*
 import net.corda.core.identity.AnonymousParty
-import net.corda.core.identity.Party
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.utilities.ProgressTracker
@@ -57,10 +56,10 @@ object SignFinalize {
 
                 // Stage 3.
                 progressTracker.currentStep = GATHERING_SIGS
-                val anonymousOtherParties = signers.minus(anonymousMe).map {
+                val otherParties = signers.minus(anonymousMe).map {
                     serviceHub.identityService.requireWellKnownPartyFromAnonymous(AnonymousParty(it))
-                }.map { initiateFlow(it) }
-                fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, anonymousOtherParties,
+                }.distinct().map { initiateFlow(it) }
+                fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, otherParties,
                         anonymousMe, GATHERING_SIGS.childProgressTracker()))
             }
             else {
@@ -104,10 +103,16 @@ object SignFinalize {
                             }
 
                             is MyCashContract.Commands.Move -> {
-                                val myCashOutputs = stx.tx.outputs.filter {
-                                    it.data is MyCash && (it.data as MyCash).owner == ourIdentity
-                                }
+                                // The signer should either be part of the inputs (i.e. old owner),
+                                // or part of the outputs (i.e. new owner)
+                                val myCashInputs = serviceHub.loadStates(stx.tx.inputs.toSet()).map { it.state.data as MyCash }
+                                "This must be a MyCash transaction." using (myCashInputs.isNotEmpty())
+                                val myCashOutputs = stx.tx.outputs.filter { it.data is MyCash }.map { it.data as MyCash }
                                 "This must be a MyCash transaction." using (myCashOutputs.isNotEmpty())
+                                val filteredList = listOf(myCashInputs, myCashOutputs).flatten().filter {
+                                    serviceHub.identityService.wellKnownPartyFromAnonymous(it.owner) == ourIdentity
+                                }
+                                "MOVE transaction does not contain the requested signer's identity." using (filteredList.isNotEmpty())
                             }
 
                             is MyCashContract.Commands.Exit -> {

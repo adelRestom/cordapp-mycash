@@ -74,4 +74,10 @@ data class MyCash(override val owner: AbstractParty,
             else -> throw IllegalArgumentException("Unrecognised schema $schema")
         }
     }
+
+    // Used to compare states with anonymous issuers and owners
+    fun compareQuantityAndCurrency(myCash: MyCash): Boolean {
+        return (this.amount.quantity == myCash.amount.quantity)
+        && (this.amount.token.product.currencyCode == myCash.amount.token.product.currencyCode)
+    }
 }

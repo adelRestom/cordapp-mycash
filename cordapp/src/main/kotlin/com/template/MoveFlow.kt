@@ -36,11 +36,12 @@ object MoveFlow {
     data class MoveDataIn (val utxoList: MutableList<StateAndRef<MyCash>>, val changeAmounts: MutableList<MyCash>)
 
     // Composite key that is used to group move amounts
-    data class Key(val issuer: Party, val owner: Party, val currencyCode: String)
+    data class Key(val issuer: AbstractParty, val owner: AbstractParty, val currencyCode: String)
 
     @InitiatingFlow
     @StartableByRPC
-    class Initiator(val moveAmounts: List<MyCash>, val newOwner: AbstractParty) : FlowLogic<SignedTransaction>() {
+    class Initiator(val moveAmounts: List<MyCash>, val newOwner: AbstractParty
+                    , val anonymous: Boolean = false) : FlowLogic<SignedTransaction>() {
 
         init {
             require(moveAmounts.isNotEmpty()) { "Move amounts list cannot be empty" }
@@ -48,8 +49,9 @@ object MoveFlow {
         }
 
         // Constructor to move one amount
-        constructor(issuer: AbstractParty, owner: AbstractParty, amount: Long, currencyCode: String, newOwner: Party):
-                this(listOf(MyCash(issuer, owner, amount, currencyCode)), newOwner)
+        constructor(issuer: AbstractParty, owner: AbstractParty, amount: Long, currencyCode: String,
+                    newOwner: Party, anonymous: Boolean = false):
+                this(listOf(MyCash(issuer, owner, amount, currencyCode)), newOwner, anonymous)
 
         /**
          * The progress tracker checkpoints each stage of the flow and outputs the specified messages when each
@@ -60,7 +62,16 @@ object MoveFlow {
             object FETCHING_INPUTS : Step("Fetching owners' input states.") {
                 override fun childProgressTracker() = Acceptor.tracker()
             }
+            object DECRYPT_INPUTS : Step("Decrypt inputs with unknown parties.") {
+                override fun childProgressTracker() = AnonymizeFlow.DecryptStates.tracker()
+            }
             object GENERATING_TRANSACTION : Step("Generating transaction.")
+            object GENERATE_CONFIDENTIAL_STATES : Step("Generating confidential states.") {
+                override fun childProgressTracker() = AnonymizeFlow.EncryptStates.tracker()
+            }
+            object GENERATE_CONFIDENTIAL_IDS : Step("Generating confidential identities for the transaction.") {
+                override fun childProgressTracker() = AnonymizeFlow.EncryptParties.tracker()
+            }
             object SIGN_FINALIZE : Step("Signing transaction and finalizing state.") {
                 override fun childProgressTracker() = SignFinalize.Initiator.tracker()
             }
@@ -68,7 +79,10 @@ object MoveFlow {
             fun tracker() = ProgressTracker(
                     CONSOLIDATE_INPUTS,
                     FETCHING_INPUTS,
+                    DECRYPT_INPUTS,
                     GENERATING_TRANSACTION,
+                    GENERATE_CONFIDENTIAL_STATES,
+                    GENERATE_CONFIDENTIAL_IDS,
                     SIGN_FINALIZE
             )
         }
@@ -85,7 +99,7 @@ object MoveFlow {
             // We will consolidate move amounts by owner/issuer/currency then group them by owner to minimize
             // the number of trips to owners' vaults
             val consolidatedGroupedByOwner = moveAmounts
-                    .groupBy { Key(it.issuer as Party, it.owner as Party, it.amount.token.product.currencyCode) }
+                    .groupBy { Key(it.issuer, it.owner, it.amount.token.product.currencyCode) }
                     .map {
                         val sum = it.value.fold(0L) { sum, myCash ->
                             sum + myCash.amount.quantity
@@ -113,31 +127,67 @@ object MoveFlow {
             }
 
             // Stage 3.
+            progressTracker.currentStep = DECRYPT_INPUTS
+            // Replace anonymous issuers and owners with well know parties where required;
+            // this will allow us to identify the well known required signers (i.e. owners)
+            val knownInputs = subFlow(AnonymizeFlow.DecryptStates(inputs, DECRYPT_INPUTS.childProgressTracker()))
+
+            // Stage 4.
             progressTracker.currentStep = GENERATING_TRANSACTION
             // Obtain a reference to the notary we want to use
             require (inputs.map { it.state.notary }.distinct().size == 1) { "Notary must be identical across all inputs" }
             val notary = inputs[0].state.notary
-
-            // Generate an unsigned transaction
-            val requiredParties = inputs.map { it.state.data.owner }.distinct().plus(newOwner)
-            val txCommand = Command(MyCashContract.Commands.Move(), requiredParties.map { it.owningKey })
             val txBuilder = TransactionBuilder(notary)
-                    .addCommand(txCommand)
+            val txCommand: Command<MyCashContract.Commands.Move>
+            // Old owners must sign the transaction
+            val requiredParties = knownInputs.map { it.owner }.distinct().plus(newOwner)
+
+            if (anonymous) {
+                progressTracker.currentStep = GENERATE_CONFIDENTIAL_STATES
+                // Add outputs with anonymous issuers and owners
+                val anonymousOutputs = subFlow(AnonymizeFlow.EncryptStates(
+                        consolidatedGroupedByOwner.flatMap { it.value }.map { it.copy(owner = newOwner) },
+                        GENERATE_CONFIDENTIAL_STATES.childProgressTracker()))
+                anonymousOutputs.first.forEach {
+                    txBuilder.addOutputState(it, MyCash_Contract_ID)
+                }
+
+                // Add change amounts with anonymous issuers and owners
+                val anonymousChangeAmounts = subFlow(AnonymizeFlow.EncryptStates(
+                        changeAmounts,
+                        GENERATE_CONFIDENTIAL_STATES.childProgressTracker()))
+                anonymousChangeAmounts.first.forEach {
+                    txBuilder.addOutputState(it, MyCash_Contract_ID)
+                }
+
+                progressTracker.currentStep = GENERATE_CONFIDENTIAL_IDS
+                // Required signers = anonymous old owners
+                val anonymousParties = subFlow(AnonymizeFlow.EncryptParties(requiredParties,
+                        GENERATE_CONFIDENTIAL_IDS.childProgressTracker()))
+                // Anonymous parties are required to sign the transaction
+                txCommand = Command(MyCashContract.Commands.Move(), anonymousParties.map { it.owningKey })
+            }
+            else {
+                txCommand = Command(MyCashContract.Commands.Move(), requiredParties.map { it.owningKey })
+                // Add well known outputs
+                consolidatedGroupedByOwner.flatMap { it.value }.forEach {moveAmount ->
+                    txBuilder.addOutputState(moveAmount.copy(owner = newOwner), MyCash_Contract_ID)
+                }
+                // Add well known change amounts
+                changeAmounts.forEach {
+                    txBuilder.addOutputState(it, MyCash_Contract_ID)
+                }
+            }
+            txBuilder.addCommand(txCommand)
             // Add inputs
             inputs.forEach { txBuilder.addInputState(it) }
-            // Add outputs
-            consolidatedGroupedByOwner.flatMap { it.value }.forEach {moveAmount ->
-                txBuilder.addOutputState(moveAmount.copy(owner = newOwner), MyCash_Contract_ID)
-            }
-            // Add change amounts
-            changeAmounts.forEach {
-                txBuilder.addOutputState(it, MyCash_Contract_ID)
-            }
 
-            // Stage 4.
+            // Stage 5.
             progressTracker.currentStep = SIGN_FINALIZE
             // Signing transaction and finalizing state
-            return subFlow(SignFinalize.Initiator(txBuilder = txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker()))
+            return subFlow(SignFinalize.Initiator(txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker(),
+                    anonymous = anonymous))
+
         }
     }
 
@@ -182,8 +232,7 @@ object MoveFlow {
 
                 // Step 2
                 progressTracker.currentStep = QUERY_VAULT
-                val myCashCriteria = QueryCriteria.FungibleAssetQueryCriteria(issuer = listOf(issuer),
-                        owner = listOf(owner),
+                val myCashCriteria = QueryCriteria.FungibleAssetQueryCriteria(
                         status = Vault.StateStatus.UNCONSUMED
                 )
 
@@ -198,11 +247,15 @@ object MoveFlow {
                 progressTracker.currentStep = CREATE_MOVE_INPUTS
                 var utxoSum = 0L
                 for (utxo in unconsumedStates){
-                    utxoSum += utxo.state.data.amount.quantity
-                    utxoList.add(utxo)
-                    // Gather enough cash
-                    if (utxoSum >= amount) {
-                        break
+                    val knownIssuer = serviceHub.identityService.wellKnownPartyFromAnonymous(utxo.state.data.issuer)
+                    val knownOwner = serviceHub.identityService.wellKnownPartyFromAnonymous(utxo.state.data.owner)
+                    if (knownIssuer == issuer && knownOwner == owner) {
+                        utxoSum += utxo.state.data.amount.quantity
+                        utxoList.add(utxo)
+                        // Gather enough cash
+                        if (utxoSum >= amount) {
+                            break
+                        }
                     }
                 }
 
