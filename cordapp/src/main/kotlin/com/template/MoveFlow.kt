@@ -11,6 +11,7 @@ import net.corda.core.contracts.Issued
 import net.corda.core.contracts.StateAndRef
 import net.corda.core.flows.*
 import net.corda.core.identity.AbstractParty
+import net.corda.core.identity.AnonymousParty
 import net.corda.core.identity.Party
 import net.corda.core.node.services.Vault
 import net.corda.core.node.services.queryBy
@@ -62,9 +63,6 @@ object MoveFlow {
             object FETCHING_INPUTS : Step("Fetching owners' input states.") {
                 override fun childProgressTracker() = Acceptor.tracker()
             }
-            object DECRYPT_INPUTS : Step("Decrypt inputs with unknown parties.") {
-                override fun childProgressTracker() = AnonymizeFlow.DecryptStates.tracker()
-            }
             object GENERATING_TRANSACTION : Step("Generating transaction.")
             object GENERATE_CONFIDENTIAL_STATES : Step("Generating confidential states.") {
                 override fun childProgressTracker() = AnonymizeFlow.EncryptStates.tracker()
@@ -79,7 +77,6 @@ object MoveFlow {
             fun tracker() = ProgressTracker(
                     CONSOLIDATE_INPUTS,
                     FETCHING_INPUTS,
-                    DECRYPT_INPUTS,
                     GENERATING_TRANSACTION,
                     GENERATE_CONFIDENTIAL_STATES,
                     GENERATE_CONFIDENTIAL_IDS,
@@ -127,20 +124,14 @@ object MoveFlow {
             }
 
             // Stage 3.
-            progressTracker.currentStep = DECRYPT_INPUTS
-            // Replace anonymous issuers and owners with well know parties where required;
-            // this will allow us to identify the well known required signers (i.e. owners)
-            val knownInputs = subFlow(AnonymizeFlow.DecryptStates(inputs, DECRYPT_INPUTS.childProgressTracker()))
-
-            // Stage 4.
             progressTracker.currentStep = GENERATING_TRANSACTION
             // Obtain a reference to the notary we want to use
             require (inputs.map { it.state.notary }.distinct().size == 1) { "Notary must be identical across all inputs" }
             val notary = inputs[0].state.notary
             val txBuilder = TransactionBuilder(notary)
             val txCommand: Command<MyCashContract.Commands.Move>
-            // Old owners must sign the transaction
-            val requiredParties = knownInputs.map { it.owner }.distinct().plus(newOwner)
+            // Owners (old and new) must sign the transaction
+            val requiredParties = inputs.map { it.state.data.owner }.distinct().plus(newOwner)
 
             if (anonymous) {
                 progressTracker.currentStep = GENERATE_CONFIDENTIAL_STATES
@@ -161,10 +152,14 @@ object MoveFlow {
                 }
 
                 progressTracker.currentStep = GENERATE_CONFIDENTIAL_IDS
-                // Required signers = anonymous old owners
-                val anonymousParties = subFlow(AnonymizeFlow.EncryptParties(requiredParties,
+                // Inputs might have a mix of known and anonymous parties; we will only encrypt the known ones
+                val encryptedParties = subFlow(AnonymizeFlow.EncryptParties(
+                        requiredParties.filter { it is Party },
                         GENERATE_CONFIDENTIAL_IDS.childProgressTracker()))
                 // Anonymous parties are required to sign the transaction
+                val anonymousParties = listOf(
+                        requiredParties.filter { it is AnonymousParty }.map { it as AnonymousParty },
+                        encryptedParties).flatten()
                 txCommand = Command(MyCashContract.Commands.Move(), anonymousParties.map { it.owningKey })
             }
             else {
@@ -182,12 +177,11 @@ object MoveFlow {
             // Add inputs
             inputs.forEach { txBuilder.addInputState(it) }
 
-            // Stage 5.
+            // Stage 4.
             progressTracker.currentStep = SIGN_FINALIZE
             // Signing transaction and finalizing state
             return subFlow(SignFinalize.Initiator(txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker(),
                     anonymous = anonymous))
-
         }
     }
 

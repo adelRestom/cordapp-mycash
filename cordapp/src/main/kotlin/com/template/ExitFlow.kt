@@ -11,6 +11,8 @@ import net.corda.core.crypto.SecureHash
 import net.corda.core.flows.FlowException
 import net.corda.core.flows.FlowLogic
 import net.corda.core.flows.StartableByRPC
+import net.corda.core.identity.AnonymousParty
+import net.corda.core.identity.Party
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.utilities.ProgressTracker
@@ -33,7 +35,7 @@ object ExitFlow {
          * checkpoint is reached in the code. See the 'progressTracker.currentStep' expressions within the call() function.
          */
         companion object {
-            object DECRYPT_INPUTS : Step("Decrypt inputs with unknown parties.") {
+            object FETCH_INPUTS : Step("Fetch referenced inputs.") {
                 override fun childProgressTracker() = AnonymizeFlow.DecryptStates.tracker()
             }
             object GENERATING_TRANSACTION : Step("Generating transaction.")
@@ -45,7 +47,7 @@ object ExitFlow {
             }
 
             fun tracker() = ProgressTracker(
-                    DECRYPT_INPUTS,
+                    FETCH_INPUTS,
                     GENERATING_TRANSACTION,
                     GENERATE_CONFIDENTIAL_IDS,
                     SIGN_FINALIZE
@@ -60,16 +62,13 @@ object ExitFlow {
         @Suspendable
         override fun call(): SignedTransaction {
             // Stage 1.
-            progressTracker.currentStep = DECRYPT_INPUTS
+            progressTracker.currentStep = FETCH_INPUTS
             val myCashInputs: List<StateAndRef<MyCash>> = try {
                 inputs.map { serviceHub.toStateAndRef<MyCash>(it) }
             }
             catch (e: TransactionResolutionException) {
                 throw FlowException("$ourIdentity cannot EXIT one of the passed MyCash states, because it wasn't one of the participants at the time of their ISSUE")
             }
-            // Replace anonymous issuers and owners with well know parties where required;
-            // this will allow us to identify the well known required signers (i.e. issuers and owners)
-            val knownCashList = subFlow(AnonymizeFlow.DecryptStates(myCashInputs, DECRYPT_INPUTS.childProgressTracker()))
 
             // Stage 2.
             progressTracker.currentStep = GENERATING_TRANSACTION
@@ -78,13 +77,18 @@ object ExitFlow {
             val notary = myCashInputs[0].state.notary
             val txBuilder = TransactionBuilder(notary)
             val txCommand: Command<MyCashContract.Commands.Exit>
-            val requiredParties = knownCashList.flatMap { listOf(it.issuer, it.owner) }
+            val requiredParties = myCashInputs.flatMap { listOf(it.state.data.issuer, it.state.data.owner) }
 
             if (anonymous) {
                 progressTracker.currentStep = GENERATE_CONFIDENTIAL_IDS
-                val anonymousParties = subFlow(AnonymizeFlow.EncryptParties(requiredParties,
+                // Inputs might have a mix of known and anonymous parties; we will only encrypt the known ones
+                val encryptedParties = subFlow(AnonymizeFlow.EncryptParties(
+                        requiredParties.filter { it is Party },
                         GENERATE_CONFIDENTIAL_IDS.childProgressTracker()))
                 // Anonymous parties are required to sign the transaction
+                val anonymousParties = listOf(
+                        requiredParties.filter { it is AnonymousParty }.map { it as AnonymousParty },
+                        encryptedParties).flatten()
                 txCommand = Command(MyCashContract.Commands.Exit(), anonymousParties.map { it.owningKey })
             }
             else {

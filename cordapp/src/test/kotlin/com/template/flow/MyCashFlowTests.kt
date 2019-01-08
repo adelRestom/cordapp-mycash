@@ -243,22 +243,23 @@ class MyCashFlowTests {
     }
     
     @Test
-    fun `EXIT flow consumes MyCash in all participants' vaults`() {
-        // Create MyCash
-        val flow = IssueFlow.Initiator(listOf(myCash1, myCash2), anonymous = true)
+    fun `Anonymous EXIT flow consumes (a mix of well known and anonymous) MyCash states in all participants' vaults`() {
+        // Create MyCash anonymously
+        val anonymousFlow = IssueFlow.Initiator(listOf(myCash1), anonymous = true)
+        bank1.startFlow(anonymousFlow)
+        network.runNetwork()
+
+        // Create MyCash with well known parties
+        val flow = IssueFlow.Initiator(listOf(myCash1), anonymous = false)
         bank1.startFlow(flow)
         network.runNetwork()
 
         val aCorpCash = aCorp.transaction {
             aCorp.services.vaultService.queryBy<MyCash>().states
         }
-        val bCorpCash = bCorp.transaction {
-            bCorp.services.vaultService.queryBy<MyCash>().states
-        }
-        val refs = listOf(aCorpCash.single().ref, bCorpCash.single().ref)
 
-        // EXIT MyCash
-        val exitFlow = ExitFlow.Initiator(refs, anonymous = true)
+        // EXIT MyCash anonymously
+        val exitFlow = ExitFlow.Initiator(aCorpCash.map { it.ref }, anonymous = true)
         val exitFuture = bank1.startFlow(exitFlow)
         network.runNetwork()
         val exitSignedTx = exitFuture.getOrThrow()
@@ -268,10 +269,33 @@ class MyCashFlowTests {
             val myCash = aCorp.services.vaultService.queryBy<MyCash>(unconsumedCriteria).states
             assert(myCash.isEmpty())
         }
+    }
 
-        bCorp.transaction {
+    @Test
+    fun `Known EXIT flow consumes (a mix of well known and anonymous) MyCash states in all participants' vaults`() {
+        // Create MyCash anonymously
+        val anonymousFlow = IssueFlow.Initiator(listOf(myCash1), anonymous = true)
+        bank1.startFlow(anonymousFlow)
+        network.runNetwork()
+
+        // Create MyCash with well known parties
+        val flow = IssueFlow.Initiator(listOf(myCash1), anonymous = false)
+        bank1.startFlow(flow)
+        network.runNetwork()
+
+        val aCorpCash = aCorp.transaction {
+            aCorp.services.vaultService.queryBy<MyCash>().states
+        }
+
+        // EXIT MyCash
+        val exitFlow = ExitFlow.Initiator(aCorpCash.map { it.ref }, anonymous = false)
+        val exitFuture = bank1.startFlow(exitFlow)
+        network.runNetwork()
+        val exitSignedTx = exitFuture.getOrThrow()
+
+        aCorp.transaction {
             val unconsumedCriteria = QueryCriteria.VaultQueryCriteria(Vault.StateStatus.UNCONSUMED)
-            val myCash = bCorp.services.vaultService.queryBy<MyCash>(unconsumedCriteria).states
+            val myCash = aCorp.services.vaultService.queryBy<MyCash>(unconsumedCriteria).states
             assert(myCash.isEmpty())
         }
     }
@@ -488,24 +512,20 @@ class MyCashFlowTests {
             val myCashList = aCorp.services.vaultService.queryBy<MyCash>(unconsumedCriteria).states
             // aCorp had 100 USD from bank1; it sent 10+28 of them; so the change is 100-38 = 62
             val filteredResults1 = myCashList.map { it.state.data }.filter {
-                it is MyCash &&
-                    // Compare issuer, owner, quantity, and currency
-                    (it.compareQuantityAndCurrency(ch1) &&
-                            aCorp.services.identityService.wellKnownPartyFromAnonymous(it.issuer) == ch1.issuer &&
-                            aCorp.services.identityService.wellKnownPartyFromAnonymous(it.owner) == ch1.owner
-                            )
+                // Compare issuer, owner, quantity, and currency
+                it.compareQuantityAndCurrency(ch1) &&
+                        aCorp.services.identityService.wellKnownPartyFromAnonymous(it.issuer) == ch1.issuer &&
+                        aCorp.services.identityService.wellKnownPartyFromAnonymous(it.owner) == ch1.owner
             }
             // Transaction contains ch1
             assert(filteredResults1.isNotEmpty())
 
             // aCorp had 50 GBP from bank1; it sent 15 of them; so the change is 50-35 = 15
             val filteredResults2 = myCashList.map { it.state.data }.filter {
-                it is MyCash &&
-                    // Compare issuer, owner, quantity, and currency
-                    (it.compareQuantityAndCurrency(ch2) &&
-                            aCorp.services.identityService.wellKnownPartyFromAnonymous(it.issuer) == ch2.issuer &&
-                            aCorp.services.identityService.wellKnownPartyFromAnonymous(it.owner) == ch2.owner
-                            )
+                // Compare issuer, owner, quantity, and currency
+                it.compareQuantityAndCurrency(ch2) &&
+                        aCorp.services.identityService.wellKnownPartyFromAnonymous(it.issuer) == ch2.issuer &&
+                        aCorp.services.identityService.wellKnownPartyFromAnonymous(it.owner) == ch2.owner
             }
             // Transaction contains ch2
             assert(filteredResults2.isNotEmpty())
@@ -516,24 +536,20 @@ class MyCashFlowTests {
             val myCashList = cCorp.services.vaultService.queryBy<MyCash>(unconsumedCriteria).states
             // cCorp received 10+28 USD from bank1/aCorp
             val filteredResults1 = myCashList.map { it.state.data }.filter {
-                it is MyCash &&
-                        // Compare issuer, owner, quantity, and currency
-                        (it.compareQuantityAndCurrency(co1) &&
-                                cCorp.services.identityService.wellKnownPartyFromAnonymous(it.issuer) == co1.issuer &&
-                                cCorp.services.identityService.wellKnownPartyFromAnonymous(it.owner) == co1.owner
-                                )
+                // Compare issuer, owner, quantity, and currency
+                it.compareQuantityAndCurrency(co1) &&
+                        cCorp.services.identityService.wellKnownPartyFromAnonymous(it.issuer) == co1.issuer &&
+                        cCorp.services.identityService.wellKnownPartyFromAnonymous(it.owner) == co1.owner
             }
             // Transaction contains co1
             assert(filteredResults1.isNotEmpty())
 
             // cCorp received 35 GBP from bank1/aCorp
             val filteredResults2 = myCashList.map { it.state.data }.filter {
-                it is MyCash &&
-                        // Compare issuer, owner, quantity, and currency
-                        (it.compareQuantityAndCurrency(co2) &&
-                                cCorp.services.identityService.wellKnownPartyFromAnonymous(it.issuer) == co2.issuer &&
-                                cCorp.services.identityService.wellKnownPartyFromAnonymous(it.owner) == co2.owner
-                                )
+                // Compare issuer, owner, quantity, and currency
+                it.compareQuantityAndCurrency(co2) &&
+                        cCorp.services.identityService.wellKnownPartyFromAnonymous(it.issuer) == co2.issuer &&
+                        cCorp.services.identityService.wellKnownPartyFromAnonymous(it.owner) == co2.owner
             }
             // Transaction contains co2
             assert(filteredResults2.isNotEmpty())

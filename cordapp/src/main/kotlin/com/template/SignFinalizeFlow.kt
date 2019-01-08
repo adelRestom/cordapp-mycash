@@ -73,7 +73,7 @@ object SignFinalize {
                 val requiredParties = signers.map {
                     serviceHub.identityService.requireWellKnownPartyFromAnonymous(AnonymousParty(it))
                 }
-                val counterParties = requiredParties.minus(ourIdentity).map { initiateFlow(it) }
+                val counterParties = requiredParties.minus(ourIdentity).distinct().map { initiateFlow(it) }
                 fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, counterParties, GATHERING_SIGS.childProgressTracker()))
             }
 
