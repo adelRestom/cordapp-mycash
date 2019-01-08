@@ -15,11 +15,11 @@ build/nodes/runnodes
 #### Inside Bank terminal:
 ```
 # Issue 50 USD to PartyA in 5 installments
-flow start IssueFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=PartyA,L=London,C=GB", amount: 1000, currencyCode: "USD"
-flow start IssueFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=PartyA,L=London,C=GB", amount: 1000, currencyCode: "USD"
-flow start IssueFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=PartyA,L=London,C=GB", amount: 1000, currencyCode: "USD"
-flow start IssueFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=PartyA,L=London,C=GB", amount: 1000, currencyCode: "USD"
-flow start IssueFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=PartyA,L=London,C=GB", amount: 1000, currencyCode: "USD"
+flow start IssueFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=PartyA,L=London,C=GB", amount: 1000, currencyCode: "USD", anonymous: false
+flow start IssueFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=PartyA,L=London,C=GB", amount: 1000, currencyCode: "USD", anonymous: false
+flow start IssueFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=PartyA,L=London,C=GB", amount: 1000, currencyCode: "USD", anonymous: false
+flow start IssueFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=PartyA,L=London,C=GB", amount: 1000, currencyCode: "USD", anonymous: false
+flow start IssueFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=PartyA,L=London,C=GB", amount: 1000, currencyCode: "USD", anonymous: false
 ```
 
 #### Inside PartyA terminal:
@@ -28,7 +28,7 @@ flow start IssueFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=Party
 run vaultQuery contractStateType: com.template.state.MyCash
 
 # Send 42 USD to PartyB
-flow start MoveFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=PartyA,L=London,C=GB", amount: 4200, currencyCode: "USD", newOwner: "O=PartyB,L=New York,C=US"
+flow start MoveFlow$Initiator issuer: "O=Bank,L=New York,C=US", owner: "O=PartyA,L=London,C=GB", amount: 4200, currencyCode: "USD", newOwner: "O=PartyB,L=New York,C=US", anonymous: false
 
 # You should see one new MyCash state of value 8 USD
 run vaultQuery contractStateType: com.template.state.MyCash
@@ -47,7 +47,7 @@ run vaultQuery contractStateType: com.template.state.MyCash
 run vaultQuery contractStateType: com.template.state.MyCash
 
 # Exit the remaining 8 USD from the ledger
-flow start ExitFlow$Initiator txHash: "", txIndex: 
+flow start ExitFlow$Initiator txHash: "", txIndex: , anonymous: false 
 
 # You shouldn't see any unconsumed states
 run vaultQuery contractStateType: com.template.state.MyCash
