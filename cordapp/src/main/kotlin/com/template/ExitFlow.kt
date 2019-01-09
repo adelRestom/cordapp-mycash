@@ -11,8 +11,6 @@ import net.corda.core.crypto.SecureHash
 import net.corda.core.flows.FlowException
 import net.corda.core.flows.FlowLogic
 import net.corda.core.flows.StartableByRPC
-import net.corda.core.identity.AnonymousParty
-import net.corda.core.identity.Party
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.utilities.ProgressTracker
@@ -21,14 +19,14 @@ import net.corda.core.utilities.ProgressTracker.Step
 object ExitFlow {
 
     @StartableByRPC
-    class Initiator(val inputs: List<StateRef>, val anonymous: Boolean = false) : FlowLogic<SignedTransaction>() {
+    class Initiator(val inputs: List<StateRef>) : FlowLogic<SignedTransaction>() {
 
         init {
             require(inputs.isNotEmpty()) { "Inputs list cannot be empty" }
         }
 
-        constructor(txSecurehash: SecureHash, txIndex: Int, anonymous: Boolean = false) : this(listOf(StateRef(txSecurehash, txIndex)), anonymous)
-        constructor(txHash: String, txIndex: Int, anonymous: Boolean = false) : this(SecureHash.parse(txHash), txIndex, anonymous)
+        constructor(txSecurehash: SecureHash, txIndex: Int) : this(listOf(StateRef(txSecurehash, txIndex)))
+        constructor(txHash: String, txIndex: Int) : this(SecureHash.parse(txHash), txIndex)
 
         /**
          * The progress tracker checkpoints each stage of the flow and outputs the specified messages when each
@@ -39,9 +37,6 @@ object ExitFlow {
                 override fun childProgressTracker() = AnonymizeFlow.DecryptStates.tracker()
             }
             object GENERATING_TRANSACTION : Step("Generating transaction.")
-            object GENERATE_CONFIDENTIAL_IDS : Step("Generating confidential identities for the transaction.") {
-                override fun childProgressTracker() = AnonymizeFlow.EncryptParties.tracker()
-            }
             object SIGN_FINALIZE : Step("Signing transaction and finalizing state.") {
                 override fun childProgressTracker() = SignFinalize.Initiator.tracker()
             }
@@ -49,7 +44,6 @@ object ExitFlow {
             fun tracker() = ProgressTracker(
                     FETCH_INPUTS,
                     GENERATING_TRANSACTION,
-                    GENERATE_CONFIDENTIAL_IDS,
                     SIGN_FINALIZE
             )
         }
@@ -78,29 +72,14 @@ object ExitFlow {
             val txBuilder = TransactionBuilder(notary)
             val txCommand: Command<MyCashContract.Commands.Exit>
             val requiredParties = myCashInputs.flatMap { listOf(it.state.data.issuer, it.state.data.owner) }
-
-            if (anonymous) {
-                progressTracker.currentStep = GENERATE_CONFIDENTIAL_IDS
-                // Inputs might have a mix of known and anonymous parties; we will only encrypt the known ones
-                val encryptedParties = subFlow(AnonymizeFlow.EncryptParties(
-                        requiredParties.filter { it is Party },
-                        GENERATE_CONFIDENTIAL_IDS.childProgressTracker()))
-                // Anonymous parties are required to sign the transaction
-                val anonymousParties = listOf(
-                        requiredParties.filter { it is AnonymousParty }.map { it as AnonymousParty },
-                        encryptedParties).flatten()
-                txCommand = Command(MyCashContract.Commands.Exit(), anonymousParties.map { it.owningKey })
-            }
-            else {
-                txCommand = Command(MyCashContract.Commands.Exit(), requiredParties.map { it.owningKey })
-            }
+            txCommand = Command(MyCashContract.Commands.Exit(), requiredParties.map { it.owningKey })
             txBuilder.addCommand(txCommand)
             myCashInputs.forEach { txBuilder.addInputState(it) }
 
             // Stage 2.
             progressTracker.currentStep = SIGN_FINALIZE
             // Signing transaction and finalizing state
-            return subFlow(SignFinalize.Initiator(txBuilder = txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker(), anonymous = anonymous))
+            return subFlow(SignFinalize.Initiator(txBuilder = txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker()))
         }
     }
 }

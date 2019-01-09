@@ -195,8 +195,8 @@ class MyCashFlowTests {
             aCorp.services.vaultService.queryBy<MyCash>().states
         }
 
-        // EXIT MyCash anonymously
-        val anonymousExitFlow = ExitFlow.Initiator(listOf(aCorpCash.single().ref), anonymous = true)
+        // EXIT MyCash
+        val anonymousExitFlow = ExitFlow.Initiator(listOf(aCorpCash.single().ref))
         val anonymousExitFuture = bank1.startFlow(anonymousExitFlow)
         network.runNetwork()
         val anonymousExitSignedTx = anonymousExitFuture.getOrThrow()
@@ -223,8 +223,8 @@ class MyCashFlowTests {
             bCorp.services.vaultService.queryBy<MyCash>().states
         }
 
-        // Exit MyCash with well known parties
-        val knownExitFlow = ExitFlow.Initiator(listOf(bCorpCash.single().ref), anonymous = false)
+        // Exit MyCash
+        val knownExitFlow = ExitFlow.Initiator(listOf(bCorpCash.single().ref))
         val knownExitFuture = bank1.startFlow(knownExitFlow)
         network.runNetwork()
         val knownExitSignedTx = knownExitFuture.getOrThrow()
@@ -240,39 +240,11 @@ class MyCashFlowTests {
         assert(knownTxInputs.map { it.state.data }.contains(myCash2))
         // myCash2 EXIT was signed with well known parties
         assert(knownRecordedTx.sigs.map { it.by }.contains(bCorp.info.singleIdentity().owningKey))
-    }
-    
-    @Test
-    fun `Anonymous EXIT flow consumes (a mix of well known and anonymous) MyCash states in all participants' vaults`() {
-        // Create MyCash anonymously
-        val anonymousFlow = IssueFlow.Initiator(listOf(myCash1), anonymous = true)
-        bank1.startFlow(anonymousFlow)
-        network.runNetwork()
 
-        // Create MyCash with well known parties
-        val flow = IssueFlow.Initiator(listOf(myCash1), anonymous = false)
-        bank1.startFlow(flow)
-        network.runNetwork()
-
-        val aCorpCash = aCorp.transaction {
-            aCorp.services.vaultService.queryBy<MyCash>().states
-        }
-
-        // EXIT MyCash anonymously
-        val exitFlow = ExitFlow.Initiator(aCorpCash.map { it.ref }, anonymous = true)
-        val exitFuture = bank1.startFlow(exitFlow)
-        network.runNetwork()
-        val exitSignedTx = exitFuture.getOrThrow()
-
-        aCorp.transaction {
-            val unconsumedCriteria = QueryCriteria.VaultQueryCriteria(Vault.StateStatus.UNCONSUMED)
-            val myCash = aCorp.services.vaultService.queryBy<MyCash>(unconsumedCriteria).states
-            assert(myCash.isEmpty())
-        }
     }
 
     @Test
-    fun `Known EXIT flow consumes (a mix of well known and anonymous) MyCash states in all participants' vaults`() {
+    fun `EXIT flow consumes (a mix of well known and anonymous) MyCash states in all participants' vaults`() {
         // Create MyCash anonymously
         val anonymousFlow = IssueFlow.Initiator(listOf(myCash1), anonymous = true)
         bank1.startFlow(anonymousFlow)
@@ -288,7 +260,7 @@ class MyCashFlowTests {
         }
 
         // EXIT MyCash
-        val exitFlow = ExitFlow.Initiator(aCorpCash.map { it.ref }, anonymous = false)
+        val exitFlow = ExitFlow.Initiator(aCorpCash.map { it.ref })
         val exitFuture = bank1.startFlow(exitFlow)
         network.runNetwork()
         val exitSignedTx = exitFuture.getOrThrow()

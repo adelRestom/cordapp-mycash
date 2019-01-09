@@ -84,7 +84,7 @@ object IssueFlow {
             // Stage 2.
             progressTracker.currentStep = SIGN_FINALIZE
             // Signing transaction and finalizing state
-            return subFlow(SignFinalize.Initiator(txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker(), anonymous = anonymous))
+            return subFlow(SignFinalize.Initiator(txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker()))
         }
     }
 }

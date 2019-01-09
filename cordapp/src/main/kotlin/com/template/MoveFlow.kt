@@ -180,8 +180,7 @@ object MoveFlow {
             // Stage 4.
             progressTracker.currentStep = SIGN_FINALIZE
             // Signing transaction and finalizing state
-            return subFlow(SignFinalize.Initiator(txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker(),
-                    anonymous = anonymous))
+            return subFlow(SignFinalize.Initiator(txBuilder, progressTracker = SIGN_FINALIZE.childProgressTracker()))
         }
     }
 

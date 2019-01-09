@@ -14,8 +14,8 @@ import net.corda.core.utilities.ProgressTracker.Step
 object SignFinalize {
 
     @InitiatingFlow
-    class Initiator(val txBuilder: TransactionBuilder, override val progressTracker: ProgressTracker,
-                    val anonymous: Boolean = false): FlowLogic<SignedTransaction>() {
+    class Initiator(val txBuilder: TransactionBuilder, override val progressTracker: ProgressTracker):
+            FlowLogic<SignedTransaction>() {
 
         companion object {
             object VERIFYING_TRANSACTION : Step("Verifying contract constraints.")
@@ -43,16 +43,18 @@ object SignFinalize {
             // Verify that the transaction is valid.
             txBuilder.verify(serviceHub)
 
+            // Stage 2.
+            progressTracker.currentStep = SIGNING_TRANSACTION
             val signers = txBuilder.commands().flatMap { it.signers }
+            // Extract my anonymous identity public keys
+            val anonymousMe = signers.filter {
+                serviceHub.identityService.requireWellKnownPartyFromAnonymous(AnonymousParty(it)) == ourIdentity
+            }
+            val partSignedTx: SignedTransaction
             val fullySignedTx: SignedTransaction
-            if (anonymous) {
-                // Stage 2.
-                progressTracker.currentStep = SIGNING_TRANSACTION
-                // Extract my anonymous identity public keys
-                val anonymousMe = signers.filter {
-                    serviceHub.identityService.requireWellKnownPartyFromAnonymous(AnonymousParty(it)) == ourIdentity
-                }
-                val partSignedTx = serviceHub.signInitialTransaction(txBuilder, anonymousMe)
+            if (anonymousMe.isNotEmpty()) {
+                // Sign the transaction with my anonymous identity
+                partSignedTx = serviceHub.signInitialTransaction(txBuilder, anonymousMe)
 
                 // Stage 3.
                 progressTracker.currentStep = GATHERING_SIGS
@@ -63,10 +65,8 @@ object SignFinalize {
                         anonymousMe, GATHERING_SIGS.childProgressTracker()))
             }
             else {
-                // Stage 2.
-                progressTracker.currentStep = SIGNING_TRANSACTION
                 // Sign the transaction with my known identity
-                val partSignedTx = serviceHub.signInitialTransaction(txBuilder)
+                partSignedTx = serviceHub.signInitialTransaction(txBuilder)
 
                 // Stage 3.
                 progressTracker.currentStep = GATHERING_SIGS
@@ -74,7 +74,8 @@ object SignFinalize {
                     serviceHub.identityService.requireWellKnownPartyFromAnonymous(AnonymousParty(it))
                 }
                 val counterParties = requiredParties.minus(ourIdentity).distinct().map { initiateFlow(it) }
-                fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, counterParties, GATHERING_SIGS.childProgressTracker()))
+                fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, counterParties,
+                        GATHERING_SIGS.childProgressTracker()))
             }
 
             // Stage 4.
