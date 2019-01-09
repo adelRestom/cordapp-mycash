@@ -45,7 +45,7 @@ class MyCashContract : Contract {
                     "At least one output should be created." using (outputs.isNotEmpty())
 
                     // Signatures
-                    //"Previous owners must sign MyCash MOVE transaction." using command.signers.containsAll(inputs.map { it.owner.owningKey })
+                    "Previous owners must sign MyCash MOVE transaction." using command.signers.containsAll(inputs.map { it.owner.owningKey })
 
                     // Business logic
                     /*val inOut = listOf(inputs, outputs).flatMap { it }
@@ -68,7 +68,7 @@ class MyCashContract : Contract {
                     "There shouldn't be any outputs created." using (outputs.isEmpty())
 
                     // Signatures
-                    //"Exit key owners must sign MyCash EXIT transaction." using command.signers.containsAll(inputs.flatMap { it.exitKeys })
+                    "Exit key owners must sign MyCash EXIT transaction." using command.signers.containsAll(inputs.flatMap { it.exitKeys })
                 }
             }
 
