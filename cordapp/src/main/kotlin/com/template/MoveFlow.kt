@@ -34,7 +34,8 @@ object MoveFlow {
 
     // This class is used to receive data in (to Initiator from Acceptor)
     @CordaSerializable
-    data class MoveDataIn (val utxoList: MutableList<StateAndRef<MyCash>>, val changeAmounts: MutableList<MyCash>)
+    data class MoveDataIn (val utxoList: MutableList<StateAndRef<MyCash>>, val changeAmounts: MutableList<MyCash>,
+                           val anonymousIdentities: MutableMap<AbstractParty, AbstractParty>)
 
     // Composite key that is used to group move amounts
     data class Key(val issuer: AbstractParty, val owner: AbstractParty, val currencyCode: String)
@@ -111,6 +112,8 @@ object MoveFlow {
             val inputs = mutableListOf<StateAndRef<MyCash>>()
             // This list will hold new outputs to return change to owners
             val changeAmounts = mutableListOf<MyCash>()
+            // This map will allows us to reuse existing anonymous identities
+            val anonymousIdentities = mutableMapOf<AbstractParty, AbstractParty>()
             // Query owners' vaults to gather UTXO's
             consolidatedGroupedByOwner.forEach {
                 // Our key is the owner
@@ -121,6 +124,7 @@ object MoveFlow {
                 }
                 inputs.addAll(moveData.utxoList)
                 changeAmounts.addAll(moveData.changeAmounts)
+                moveData.anonymousIdentities.forEach{ identity -> anonymousIdentities.putIfAbsent(identity.key, identity.value) }
             }
 
             // Stage 3.
@@ -137,29 +141,36 @@ object MoveFlow {
                 progressTracker.currentStep = GENERATE_CONFIDENTIAL_STATES
                 // Add outputs with anonymous issuers and owners
                 val anonymousOutputs = subFlow(AnonymizeFlow.EncryptStates(
-                        consolidatedGroupedByOwner.flatMap { it.value }.map { it.copy(owner = newOwner) },
+                        anonymousIdentities, consolidatedGroupedByOwner.flatMap { it.value }.map { it.copy(owner = newOwner) },
                         GENERATE_CONFIDENTIAL_STATES.childProgressTracker()))
                 anonymousOutputs.first.forEach {
                     txBuilder.addOutputState(it, MyCash_Contract_ID)
                 }
+                // Add newly generated confidential identities if any
+                anonymousOutputs.second.forEach {
+                    anonymousIdentities.putIfAbsent(it.key, it.value)
+                }
 
                 // Add change amounts with anonymous issuers and owners
                 val anonymousChangeAmounts = subFlow(AnonymizeFlow.EncryptStates(
-                        changeAmounts,
-                        GENERATE_CONFIDENTIAL_STATES.childProgressTracker()))
+                        anonymousIdentities, changeAmounts, GENERATE_CONFIDENTIAL_STATES.childProgressTracker()))
                 anonymousChangeAmounts.first.forEach {
                     txBuilder.addOutputState(it, MyCash_Contract_ID)
+                }
+                // Add newly generated confidential identities if any
+                anonymousChangeAmounts.second.forEach {
+                    anonymousIdentities.putIfAbsent(it.key, it.value)
                 }
 
                 progressTracker.currentStep = GENERATE_CONFIDENTIAL_IDS
                 // Inputs might have a mix of known and anonymous parties; we will only encrypt the known ones
                 val encryptedParties = subFlow(AnonymizeFlow.EncryptParties(
-                        requiredParties.filter { it is Party },
+                        anonymousIdentities, requiredParties.filter { it is Party },
                         GENERATE_CONFIDENTIAL_IDS.childProgressTracker()))
-                // Anonymous parties are required to sign the transaction
+                // Anonymous parties are required to sign the transaction = old owners + new owner + me
                 val anonymousParties = listOf(
                         requiredParties.filter { it is AnonymousParty }.map { it as AnonymousParty },
-                        encryptedParties).flatten()
+                        encryptedParties, anonymousOutputs.third.map { it }, anonymousChangeAmounts.third.map { it }).flatten()
                 txCommand = Command(MyCashContract.Commands.Move(), anonymousParties.map { it.owningKey })
             }
             else {
@@ -216,6 +227,7 @@ object MoveFlow {
 
             val utxoList = mutableListOf<StateAndRef<MyCash>>()
             val changeAmounts = mutableListOf<MyCash>()
+            val anonymousIdentities = mutableMapOf<AbstractParty, AbstractParty>()
             for (moveAmount in moveData.moveAmounts) {
                 // The amount that we want to move
                 val issuer = moveAmount.issuer
@@ -249,6 +261,11 @@ object MoveFlow {
                         if (utxoSum >= amount) {
                             break
                         }
+                        // Store anonymous identities so that we can reuse them
+                        if (utxo.state.data.issuer is AnonymousParty)
+                            anonymousIdentities.putIfAbsent(issuer, utxo.state.data.issuer)
+                        if (utxo.state.data.owner is AnonymousParty)
+                            anonymousIdentities.putIfAbsent(owner, utxo.state.data.owner)
                     }
                 }
 
@@ -267,7 +284,7 @@ object MoveFlow {
 
             // Step 5
             progressTracker.currentStep = SEND_DATA
-            counterFlow.send(MoveDataIn(utxoList, changeAmounts))
+            counterFlow.send(MoveDataIn(utxoList, changeAmounts, anonymousIdentities))
         }
     }
 }
