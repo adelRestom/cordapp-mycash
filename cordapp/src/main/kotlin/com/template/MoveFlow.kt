@@ -113,7 +113,7 @@ object MoveFlow {
             // This list will hold new outputs to return change to owners
             val changeAmounts = mutableListOf<MyCash>()
             // This map will allows us to reuse existing anonymous identities
-            val anonymousIdentities = mutableMapOf<AbstractParty, AbstractParty>()
+            val anonymousIdentities = mutableMapOf<Party, AnonymousParty>()
             // Query owners' vaults to gather UTXO's
             consolidatedGroupedByOwner.forEach {
                 // Our key is the owner
@@ -124,7 +124,8 @@ object MoveFlow {
                 }
                 inputs.addAll(moveData.utxoList)
                 changeAmounts.addAll(moveData.changeAmounts)
-                moveData.anonymousIdentities.forEach{ identity -> anonymousIdentities.putIfAbsent(identity.key, identity.value) }
+                moveData.anonymousIdentities.forEach{ identity -> anonymousIdentities.putIfAbsent(identity.key as Party,
+                        identity.value as AnonymousParty) }
             }
 
             // Stage 3.
@@ -144,7 +145,7 @@ object MoveFlow {
                         anonymousIdentities, consolidatedGroupedByOwner.flatMap { it.value }.map { it.copy(owner = newOwner) },
                         GENERATE_CONFIDENTIAL_STATES.childProgressTracker()))
                 anonymousOutputs.first.forEach {
-                    txBuilder.addOutputState(it, MyCash_Contract_ID)
+                    txBuilder.addOutputState(it.toState(), MyCash_Contract_ID)
                 }
                 // Add newly generated confidential identities if any
                 anonymousOutputs.second.forEach {
@@ -155,7 +156,7 @@ object MoveFlow {
                 val anonymousChangeAmounts = subFlow(AnonymizeFlow.EncryptStates(
                         anonymousIdentities, changeAmounts, GENERATE_CONFIDENTIAL_STATES.childProgressTracker()))
                 anonymousChangeAmounts.first.forEach {
-                    txBuilder.addOutputState(it, MyCash_Contract_ID)
+                    txBuilder.addOutputState(it.toState(), MyCash_Contract_ID)
                 }
                 // Add newly generated confidential identities if any
                 anonymousChangeAmounts.second.forEach {

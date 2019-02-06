@@ -33,9 +33,7 @@ object ExitFlow {
          * checkpoint is reached in the code. See the 'progressTracker.currentStep' expressions within the call() function.
          */
         companion object {
-            object FETCH_INPUTS : Step("Fetch referenced inputs.") {
-                override fun childProgressTracker() = AnonymizeFlow.DecryptStates.tracker()
-            }
+            object FETCH_INPUTS : Step("Fetch referenced inputs.")
             object GENERATING_TRANSACTION : Step("Generating transaction.")
             object SIGN_FINALIZE : Step("Signing transaction and finalizing state.") {
                 override fun childProgressTracker() = SignFinalize.Initiator.tracker()

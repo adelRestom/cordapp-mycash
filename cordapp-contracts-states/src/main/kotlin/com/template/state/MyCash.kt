@@ -12,6 +12,7 @@ import net.corda.core.identity.Party
 import net.corda.core.schemas.MappedSchema
 import net.corda.core.schemas.PersistentState
 import net.corda.core.schemas.QueryableState
+import net.corda.core.serialization.CordaSerializable
 import net.corda.core.utilities.OpaqueBytes
 import java.util.*
 
@@ -79,5 +80,28 @@ data class MyCash(override val owner: AbstractParty,
     fun compareQuantityAndCurrency(myCash: MyCash): Boolean {
         return (this.amount.quantity == myCash.amount.quantity)
         && (this.amount.token.product.currencyCode == myCash.amount.token.product.currencyCode)
+    }
+}
+
+// This class is used to transfer MyCash without all the extra data coming from inherited classes:
+// FungibleAsset<Currency> and QueryableState
+@CordaSerializable
+data class MyCashData(val owner: AbstractParty, val amount: Amount<Issued<Currency>>) {
+
+    init {
+        require(amount.quantity > 0L) { " MyCashData amount cannot be zero " }
+    }
+
+    constructor(issuer: AbstractParty,
+                owner: AbstractParty,
+                amount: Long,
+                currencyCode: String) :
+            this(owner, Amount(amount, Issued(issuer.ref(OpaqueBytes.of(0x01)), Currency.getInstance(currencyCode))))
+
+    val issuer
+        get() = amount.token.issuer.party
+
+    fun toState(): MyCash {
+        return MyCash(owner, amount)
     }
 }

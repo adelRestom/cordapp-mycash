@@ -2,6 +2,7 @@ package com.template
 
 import co.paralleluniverse.fibers.Suspendable
 import com.template.state.MyCash
+import com.template.state.MyCashData
 import net.corda.confidential.SwapIdentitiesFlow
 import net.corda.core.contracts.StateAndRef
 import net.corda.core.flows.FlowLogic
@@ -12,7 +13,23 @@ import net.corda.core.utilities.ProgressTracker
 import net.corda.core.utilities.ProgressTracker.Step
 
 object AnonymizeFlow {
-    class EncryptParties(val anonymousIdentities: MutableMap<AbstractParty, AbstractParty>,
+
+    // Extension function to FlowLogic
+    @Suspendable
+    fun FlowLogic<*>.generateConfidentialIdentity(otherParty: Party, progressTracker: ProgressTracker): Pair<AnonymousParty, AnonymousParty> {
+        val confidentialIdentities = subFlow(SwapIdentitiesFlow(
+                otherParty as Party,
+                false,
+                progressTracker))
+        val anonymousMe = confidentialIdentities[ourIdentity]
+                ?: throw IllegalArgumentException("Could not anonymize my identity.")
+        val anonymousOtherParty = confidentialIdentities[otherParty]
+                ?: throw IllegalArgumentException("Could not anonymise other party's identity.")
+
+        return anonymousMe to anonymousOtherParty
+    }
+
+    class EncryptParties(val anonymousIdentities: Map<Party, AnonymousParty>,
                          val knownParties: List<AbstractParty>, override val progressTracker: ProgressTracker)
         : FlowLogic<List<AnonymousParty>>(){
 
@@ -31,39 +48,27 @@ object AnonymizeFlow {
             // Anonymize known parties
             progressTracker.currentStep = ANONYMIZE
             val anonymousParties = mutableListOf<AnonymousParty>()
+            val mutableAnonymousIdentities = anonymousIdentities.toMutableMap()
             knownParties.forEach { knownParty ->
                 // Reusing anonymous identities
-                if (!anonymousIdentities.containsKey(knownParty)) {
-                    val anonymousPair = generateConfidentialIdentity(knownParty)
-                    anonymousIdentities.putIfAbsent(ourIdentity, anonymousPair.first)
-                    anonymousIdentities[knownParty] = anonymousPair.second
+                if (!mutableAnonymousIdentities.containsKey(knownParty)) {
+                    val anonymousPair = generateConfidentialIdentity(knownParty as Party,
+                            ANONYMIZE.childProgressTracker())
+                    mutableAnonymousIdentities.putIfAbsent(ourIdentity, anonymousPair.first)
+                    mutableAnonymousIdentities[knownParty] = anonymousPair.second
                     anonymousParties.addAll(listOf(anonymousPair.first, anonymousPair.second).map { it })
                 }
                 else
-                    anonymousParties.add(anonymousIdentities[knownParty] as AnonymousParty)
+                    anonymousParties.add(mutableAnonymousIdentities[knownParty] as AnonymousParty)
             }
 
             return anonymousParties
         }
-
-        @Suspendable
-        private fun generateConfidentialIdentity(otherParty: AbstractParty): Pair<AnonymousParty, AnonymousParty> {
-            val confidentialIdentities = subFlow(SwapIdentitiesFlow(
-                    otherParty as Party,
-                    false,
-                    ANONYMIZE.childProgressTracker()))
-            val anonymousMe = confidentialIdentities[ourIdentity]
-                    ?: throw IllegalArgumentException("Could not anonymise my identity.")
-            val anonymousOtherParty = confidentialIdentities[otherParty]
-                    ?: throw IllegalArgumentException("Could not anonymise other party's identity.")
-
-            return anonymousMe to anonymousOtherParty
-        }
     }
 
-    class EncryptStates(val anonymousIdentities: MutableMap<AbstractParty, AbstractParty>, val knownCashList: List<MyCash>,
+    class EncryptStates(val anonymousIdentities: Map<Party, AnonymousParty>, val knownCashList: List<MyCash>,
                         override val progressTracker: ProgressTracker)
-        : FlowLogic<Triple<List<MyCash>, MutableMap<AbstractParty, AbstractParty>, List<AnonymousParty>>>(){
+        : FlowLogic<Triple<List<MyCashData>, Map<Party, AnonymousParty>, List<AnonymousParty>>>(){
 
         companion object {
             object GO_INCOGNITO : Step("Update MyCash list with anonymous Issuers and Owners.") {
@@ -81,57 +86,46 @@ object AnonymizeFlow {
         }
 
         @Suspendable
-        override fun call(): Triple<List<MyCash>, MutableMap<AbstractParty, AbstractParty>, List<AnonymousParty>> {
+        override fun call(): Triple<List<MyCashData>, Map<Party, AnonymousParty>, List<AnonymousParty>> {
             // Replace known issuers and owners with anonymous parties
             progressTracker.currentStep = GO_INCOGNITO
-            val anonymousCashList = mutableListOf<MyCash>()
+            val anonymousCashDataList = mutableListOf<MyCashData>()
             val anonymousMe = mutableListOf<AnonymousParty>()
+            val mutableAnonymousIdentities = anonymousIdentities.toMutableMap()
 
             knownCashList.forEach { knownCash ->
-                if (!anonymousIdentities.containsKey(knownCash.issuer)) {
-                    val meAndIssuer = generateConfidentialIdentity(knownCash.issuer)
+                if (!mutableAnonymousIdentities.containsKey(knownCash.issuer)) {
+                    val meAndIssuer = generateConfidentialIdentity(knownCash.issuer as Party,
+                            GO_INCOGNITO.childProgressTracker())
                     anonymousMe.add(meAndIssuer.first)
-                    anonymousIdentities.putIfAbsent(ourIdentity, meAndIssuer.first)
-                    anonymousIdentities[knownCash.issuer] = meAndIssuer.second
+                    mutableAnonymousIdentities.putIfAbsent(ourIdentity, meAndIssuer.first)
+                    mutableAnonymousIdentities[knownCash.issuer as Party] = meAndIssuer.second
                 }
-                if (!anonymousIdentities.containsKey(knownCash.owner)) {
-                    val meAndOwner = generateConfidentialIdentity(knownCash.owner)
+                if (!mutableAnonymousIdentities.containsKey(knownCash.owner)) {
+                    val meAndOwner = generateConfidentialIdentity(knownCash.owner as Party,
+                            GO_INCOGNITO.childProgressTracker())
                     anonymousMe.add(meAndOwner.first)
-                    anonymousIdentities.putIfAbsent(ourIdentity, meAndOwner.first)
-                    anonymousIdentities[knownCash.owner] = meAndOwner.second
+                    mutableAnonymousIdentities.putIfAbsent(ourIdentity, meAndOwner.first)
+                    mutableAnonymousIdentities[knownCash.owner as Party] = meAndOwner.second
                 }
                 // Reusing anonymous identities
-                val anonymousCash = MyCash(anonymousIdentities[knownCash.issuer]!!, anonymousIdentities[knownCash.owner]!!,
+                val anonymousCashData = MyCashData(mutableAnonymousIdentities[knownCash.issuer]!!, mutableAnonymousIdentities[knownCash.owner]!!,
                         knownCash.amount.quantity, knownCash.amount.token.product.currencyCode)
-                anonymousCashList.add(anonymousCash)
+                anonymousCashDataList.add(anonymousCashData)
                 // MyCash owner should be able to resolve all anonymous parties that are part of its state;
                 // the below flow will register the issuer's anonymous identity certificate
                 // in the owner's identity service
                 progressTracker.currentStep = REGISTER_ANONYMOUS_ISSUER
-                subFlow(RegisterIdentityFlow.Send(anonymousIdentities[knownCash.issuer] as AnonymousParty, knownCash.owner as Party,
+                subFlow(RegisterIdentityFlow.Send(mutableAnonymousIdentities[knownCash.issuer] as AnonymousParty, knownCash.owner as Party,
                         REGISTER_ANONYMOUS_ISSUER.childProgressTracker()))
             }
 
-            return Triple(anonymousCashList, anonymousIdentities, anonymousMe)
-        }
-
-        @Suspendable
-        private fun generateConfidentialIdentity(otherParty: AbstractParty): Pair<AnonymousParty, AnonymousParty> {
-            val confidentialIdentities = subFlow(SwapIdentitiesFlow(
-                    otherParty as Party,
-                    false,
-                    GO_INCOGNITO.childProgressTracker()))
-            val anonymousMe = confidentialIdentities[ourIdentity]
-                    ?: throw IllegalArgumentException("Could not anonymize my identity.")
-            val anonymousOtherParty = confidentialIdentities[otherParty]
-                    ?: throw IllegalArgumentException("Could not anonymise other party's identity.")
-
-            return anonymousMe to anonymousOtherParty
+            return Triple(anonymousCashDataList, mutableAnonymousIdentities, anonymousMe)
         }
     }
 
     class DecryptStates(val anonymousCashList: List<StateAndRef<MyCash>>, override val progressTracker: ProgressTracker)
-        : FlowLogic<List<MyCash>>(){
+        : FlowLogic<List<MyCashData>>(){
 
         /**
          * The progress tracker checkpoints each stage of the flow and outputs the specified messages when each
@@ -151,17 +145,17 @@ object AnonymizeFlow {
          * The flow logic is encapsulated within the call() method.
          */
         @Suspendable
-        override fun call(): List<MyCash> {
+        override fun call(): List<MyCashData> {
             // Replace anonymous issuers and owners with known parties
             progressTracker.currentStep = GO_WELL_KNOWN
-            val knownCashList = mutableListOf<MyCash>()
+            val knownCashDataList = mutableListOf<MyCashData>()
             anonymousCashList.map { it.state.data }.forEach { anonymousCash ->
                 val knownIssuer = serviceHub.identityService.requireWellKnownPartyFromAnonymous(anonymousCash.issuer)
                 val knownOwner = serviceHub.identityService.requireWellKnownPartyFromAnonymous(anonymousCash.owner)
-                val knownCash = MyCash(knownIssuer, knownOwner, anonymousCash.amount.quantity, anonymousCash.amount.token.product.currencyCode)
-                knownCashList.add(knownCash)
+                val knownCashData = MyCashData(knownIssuer, knownOwner, anonymousCash.amount.quantity, anonymousCash.amount.token.product.currencyCode)
+                knownCashDataList.add(knownCashData)
             }
-            return knownCashList
+            return knownCashDataList
         }
     }
 }

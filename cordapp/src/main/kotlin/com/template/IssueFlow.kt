@@ -7,7 +7,6 @@ import com.template.state.MyCash
 import net.corda.core.contracts.Command
 import net.corda.core.flows.FlowLogic
 import net.corda.core.flows.StartableByRPC
-import net.corda.core.identity.AbstractParty
 import net.corda.core.identity.Party
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
@@ -61,11 +60,11 @@ object IssueFlow {
             if (anonymous) {
                 progressTracker.currentStep = GENERATE_CONFIDENTIAL_STATES
                 val anonymousStates = subFlow(AnonymizeFlow.EncryptStates(
-                        mutableMapOf<AbstractParty, AbstractParty>(), outputs,
+                        mapOf(), outputs,
                         GENERATE_CONFIDENTIAL_STATES.childProgressTracker()))
                 // Add output states with anonymous issuers and owners
                 anonymousStates.first.forEach {
-                    txBuilder.addOutputState(it, MyCash_Contract_ID)
+                    txBuilder.addOutputState(it.toState(), MyCash_Contract_ID)
                 }
 
                 progressTracker.currentStep = GENERATE_CONFIDENTIAL_IDS
